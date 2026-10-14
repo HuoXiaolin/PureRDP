@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/Build/" />
+  <Folder Name="/Build/scripts/">
+    <File Path="Build/scripts/_core.ps1" />
+    <File Path="Build/scripts/purerdp.build.ps1" />
+    <File Path="Build/scripts/purerdp.publish.portable.ps1" />
+    <File Path="Build/scripts/purerdp.publish.msix.ps1" />
+    <File Path="Build/scripts/purerdp.publish.msi.ps1" />
+    <File Path="Build/scripts/purerdp.test.ps1" />
+  </Folder>
+  <Folder Name="/Build/targets/">
+    <File Path="Build/targets/net_core.props" />
+    <File Path="Build/targets/version.props" />
+  </Folder>
+  <Project Path="PureRDP.Installer/PureRDP.Installer.csproj" />
+  <Project Path="PureRDP/PureRDP.csproj" />
+</Solution>

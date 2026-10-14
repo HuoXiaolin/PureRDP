@@ -1,0 +1,12 @@
+# 首次最小化快捷键回归检查
+
+```powershell
+dotnet build PureRDP/PureRDP.csproj -c Release
+dotnet run --project Build/tests/ShortcutFirstPress/ShortcutFirstPress.csproj -c Release
+```
+
+模拟“钩子句柄非空，但钩子未收到首个组合键”的情况，将 Ctrl、Alt、Z 的消息送入过滤器，检查当前第一次按键立即排队并最小化全部窗口、长按不反向恢复、下一次独立按键正确恢复、真全屏标志保留、钩子与消息双路径不重复执行，以及未配置/冲突键正常放行。
+
+另外检查已吞掉按键的钩子长按不会反向恢复，以及原生远程画布焦点通知会合并排队刷新拦截顺序，非远程窗口焦点通知不触发。
+
+不安装全局键盘钩子、不注入实际按键、不建立 RDP 连接、不保存用户设置；消息与焦点通知采用模拟调用，不代表真实 ActiveX 真全屏输入环境已验收。

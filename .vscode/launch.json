@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Publish MSI",
+            "type": "PowerShell",
+            "request": "launch",
+            "script": "${workspaceFolder}\\Build\\scripts\\purerdp.msi.ps1",
+            "args": ["-version", "0.0.1", "-publishFolder", "${workspaceFolder}\\PureRDP.0.0.1"],
+        },
+        {
+            "name": "Publish MSIX",
+            "type": "PowerShell",
+            "request": "launch",
+            "script": "${workspaceFolder}\\Build\\scripts\\purerdp.msix.ps1",
+            "args": ["-version", "0.0.1", "-publishFolder", "${workspaceFolder}\\PureRDP.0.0.1"],
+        }
+    ]
+}

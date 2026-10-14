@@ -1,0 +1,74 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="../Build/targets/net_core.props" />
+	<Import Project="../Build/targets/version.props" />
+
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<UseWindowsForms>true</UseWindowsForms>
+		<ApplicationIcon>PureRDP.ico</ApplicationIcon>
+		<ApplicationManifest>PureRDP.manifest</ApplicationManifest>
+		<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Content Include="PureRDP.ico">
+		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Mono.Options" Version="6.12.0.148" />
+	</ItemGroup>
+
+	<!-- Generate RDP COM interop assemblies if they don't exist -->
+	<Target Name="GenerateRdpInterop" BeforeTargets="BeforeBuild" Condition="!Exists('$(MSBuildThisFileDirectory)Platform\AxMSTSCLib.dll') Or !Exists('$(MSBuildThisFileDirectory)Platform\MSTSCLib.dll')">
+		<Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\Build\scripts\purerdp.generate-rdp-interop.ps1&quot; -OutputPath &quot;$(MSBuildThisFileDirectory)Platform&quot;" ContinueOnError="false" IgnoreExitCode="false" />
+	</Target>
+
+	<!-- Clean up generated RDP COM interop assemblies when cleaning -->
+	<Target Name="CleanRdpInterop" AfterTargets="Clean">
+		<ItemGroup>
+			<InteropDlls Include="$(MSBuildThisFileDirectory)Platform\AxMSTSCLib.dll" />
+			<InteropDlls Include="$(MSBuildThisFileDirectory)Platform\MSTSCLib.dll" />
+		</ItemGroup>
+		<Delete Files="@(InteropDlls)" ContinueOnError="true" />
+		<Message Text="Cleaned RDP COM interop assemblies" Importance="normal" />
+	</Target>
+
+	<!-- MSIX Packaging -->
+	<ItemGroup Condition="'$(WindowsPackageType)' == 'MSIX'">
+		<AppxManifest Include="PureRDP.appxmanifest" />
+		<None Update="PureRDP.appxmanifest">
+			<Link>AppxManifest.xml</Link>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="Assets\MSIX\*.png">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="AxMSTSCLib">
+			<HintPath>Platform\AxMSTSCLib.dll</HintPath>
+		</Reference>
+		<Reference Include="MSTSCLib">
+			<HintPath>Platform\MSTSCLib.dll</HintPath>
+		</Reference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Compile Update="Properties\Resources.Designer.cs">
+			<DesignTime>True</DesignTime>
+			<AutoGen>True</AutoGen>
+			<DependentUpon>Resources.resx</DependentUpon>
+		</Compile>
+	</ItemGroup>
+
+	<ItemGroup>
+		<EmbeddedResource Update="Properties\Resources.resx">
+			<Generator>ResXFileCodeGenerator</Generator>
+			<LastGenOutput>Resources.Designer.cs</LastGenOutput>
+		</EmbeddedResource>
+	</ItemGroup>
+
+</Project>

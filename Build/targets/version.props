@@ -1,0 +1,28 @@
+<Project>
+	<PropertyGroup>
+		<CurrentYear>$([System.DateTime]::Now.ToString(yyyy))</CurrentYear>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<Product>PureRDP</Product>
+		<Title>$(Product)</Title>
+		<Description>PureRDP：集中管理，一点即达的现代远程桌面客户端。</Description>
+		<Authors>HuoXiaolin</Authors>
+		<Company>Schick Software Entwicklung</Company>
+		<Copyright>© HuoXiaolin, 2026-$(CurrentYear) all rights reserved</Copyright>
+		<Tags></Tags>
+		<PackageDescription>$(Description)</PackageDescription>
+
+		<!-- Keep the product version stable by default; release scripts may still override it explicitly. -->
+		<Version>2.0.0</Version>
+		<FileVersion>2.0.0.0</FileVersion>
+		<AssemblyVersion>$(FileVersion)</AssemblyVersion>
+		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+		<PackageProjectUrl>https://github.com/HuoXiaolin/PureRDP</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/HuoXiaolin/PureRDP</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+		<PackageTags>$(Tags)</PackageTags>
+		<PackageLicenseExpression>GPL-3.0</PackageLicenseExpression>
+	</PropertyGroup>
+</Project>

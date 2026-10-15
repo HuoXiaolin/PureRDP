@@ -1,0 +1,76 @@
+name: Publish PureRDP
+
+on:
+  release:
+    types: [ published ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build with analyzers
+        shell: pwsh
+        run: Build/scripts/purerdp.build.ps1 -version $env:RELEASE_VERSION
+
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Offline regression tests
+        shell: pwsh
+        run: Build/scripts/purerdp.test.ps1 -version $env:RELEASE_VERSION
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: test-results
+          path: outputs/ci-tests/TestResults/*
+          retention-days: 10
+
+  publish:
+    needs: [build, test]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish framework-dependent EXE
+        shell: pwsh
+        run: |
+          . ./Build/scripts/_nuget-cache.ps1
+          $version = $env:RELEASE_VERSION -replace '^[vV]', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'Invalid release version' }
+          $fileVersion = if (([version]$version).Revision -lt 0) { "$version.0" } else { $version }
+          dotnet publish PureRDP/PureRDP.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=None -p:RunAnalyzers=true -p:RunAnalyzersDuringBuild=true -p:TreatWarningsAsErrors=true "-p:Version=$version" "-p:FileVersion=$fileVersion" -o outputs/github-release
+          if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+      - name: Upload EXE and documentation (no runtime, ZIP or installer)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            outputs/github-release/PureRDP.exe
+            README.md
+            README.zh-CN.md
+            CHANGELOG.md
+            LICENSE
+          fail_on_unmatched_files: true

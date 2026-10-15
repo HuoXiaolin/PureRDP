@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package 
+	xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" 
+	xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" 
+	xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" 
+	xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+	
+	<Identity 
+		Name="PureRDP"
+		Version="2.0.0.0" 
+		Publisher="CN=Florian Schick, O=Schick Software, L=Donaueschingen, S=Baden-Württemberg, C=Germany" 
+		ProcessorArchitecture="x64" />
+	
+	<Properties>
+		<DisplayName>PureRDP</DisplayName>
+		<PublisherDisplayName>Schick Software</PublisherDisplayName>
+		<Description>PureRDP：集中管理，一点即达的现代远程桌面客户端。</Description>
+		<Logo>Assets\MSIX\StoreLogo.png</Logo>
+	</Properties>
+	
+	<Resources>
+		<Resource Language="en-US" />
+	</Resources>
+	
+	<Dependencies>
+		<TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26200.0" />
+	</Dependencies>
+	
+	<Capabilities>
+		<rescap:Capability Name="runFullTrust" />
+	</Capabilities>
+	
+	<Applications>
+		<Application Id="PureRDP" Executable="PureRDP.exe" EntryPoint="Windows.FullTrustApplication" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+			<uap:VisualElements DisplayName="PureRDP" Description="集中管理，一点即达的现代远程桌面客户端。" Square150x150Logo="Assets\MSIX\Square150x150Logo.png" Square44x44Logo="Assets\MSIX\Square44x44Logo.png" BackgroundColor="transparent">
+				<uap:DefaultTile Wide310x150Logo="Assets\MSIX\Wide310x150Logo.png"></uap:DefaultTile>
+			</uap:VisualElements>
+		</Application>
+	</Applications>
+	
+</Package>

@@ -1,0 +1,66 @@
+﻿using System.Collections.Generic;
+
+namespace PureRDP.Configuration;
+
+/// <summary>
+/// Window positioning and state settings for the application window
+/// </summary>
+internal class WindowSettings
+{
+    /// <summary>
+    /// Gets or sets the window X position
+    /// </summary>
+    public int? WindowX { get; set; }
+
+    /// <summary>
+    /// Gets or sets the window Y position
+    /// </summary>
+    public int? WindowY { get; set; }
+
+    /// <summary>
+    /// Gets or sets the window width
+    /// </summary>
+    public int? WindowWidth { get; set; }
+
+    /// <summary>
+    /// Gets or sets the window height
+    /// </summary>
+    public int? WindowHeight { get; set; }
+
+    /// <summary>
+    /// Start the window maximized
+    /// </summary>
+    public bool? Maximized { get; set; }
+
+    /// <summary>
+    /// Reopen the connection in true full-screen mode.
+    /// </summary>
+    public bool? FullScreen { get; set; }
+
+    /// <summary>
+    /// Reopen true full-screen mode across all monitors when applicable.
+    /// </summary>
+    public bool? FullScreenMultiMonitor { get; set; }
+
+    /// <summary>
+    /// Indicates whether all validation checks pass
+    /// </summary>
+    public bool IsValid() => Validate().Count == 0;
+
+    /// <summary>
+    /// Validates the window settings
+    /// </summary>
+    /// <returns>A list of validation error messages. Empty if validation succeeds.</returns>
+    public IReadOnlyList<string> Validate()
+    {
+        var errors = new List<string>();
+
+        if (WindowWidth is <= 0)
+            errors.Add("WindowWidth must be greater than 0.");
+
+        if (WindowHeight is <= 0)
+            errors.Add("WindowHeight must be greater than 0.");
+
+        return errors;
+    }
+}

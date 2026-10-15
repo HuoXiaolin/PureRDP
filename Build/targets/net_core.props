@@ -1,0 +1,21 @@
+<Project>
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows</TargetFramework>
+		<Nullable>enable</Nullable>
+		<UseWindowsForms>true</UseWindowsForms>
+		<Platforms>AnyCPU</Platforms>
+		<!-- Keep compiler/WinForms checks blocking. The third-party disposable
+		     analyzer cannot fully infer WinForms child-control ownership or COM
+		     ownership transfers; retain its diagnostics as visible review warnings. -->
+		<WarningsNotAsErrors>$(WarningsNotAsErrors);IDISP001;IDISP002;IDISP003;IDISP004;IDISP006;IDISP007;IDISP008;IDISP013;IDISP017</WarningsNotAsErrors>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="IDisposableAnalyzers" Version="4.0.8">
+			<PrivateAssets>all</PrivateAssets>
+			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+		</PackageReference>
+	</ItemGroup>
+
+</Project>

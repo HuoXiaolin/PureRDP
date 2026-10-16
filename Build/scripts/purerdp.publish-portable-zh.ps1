@@ -68,6 +68,17 @@ foreach ($file in $stageFiles) {
     Copy-RelativeFile (Join-Path $stageDirectory $file) $file $releaseFolder
     Copy-RelativeFile (Join-Path $stageDirectory $file) "outputs\$Version-independent-preview\$file" $sourceFolder
 }
+# Keep relative README image links valid in every delivered README location.
+# The source root gets the same docs through the source-file list below.
+$screenshots = Join-Path $repoRoot 'docs\screenshots'
+if (Test-Path -LiteralPath $screenshots) {
+    foreach ($asset in Get-ChildItem -LiteralPath $screenshots -File) {
+        $relative = "docs\screenshots\$($asset.Name)"
+        Copy-RelativeFile $asset.FullName $relative $stageDirectory
+        Copy-RelativeFile $asset.FullName $relative $releaseFolder
+        Copy-RelativeFile $asset.FullName "outputs\$Version-independent-preview\$relative" $sourceFolder
+    }
+}
 # Never export caches, historical packages or unrelated user work folders.
 foreach ($file in $sourceFiles | Sort-Object FullName -Unique) {
     Copy-RelativeFile $file.FullName $file.FullName.Substring($repoRoot.Length + 1) $sourceFolder

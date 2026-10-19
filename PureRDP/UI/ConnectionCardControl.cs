@@ -20,6 +20,7 @@ internal sealed class ConnectionCardControl : UserControl
     private string _metaText;
     private string _initial;
     private readonly CircularPanel _avatarPanel;
+    private readonly FavoriteStarButton _pinButton;
     private readonly Label _avatarLabel;
     private readonly Label _titleLabel;
     private readonly Label _hostLabel;
@@ -124,6 +125,9 @@ internal sealed class ConnectionCardControl : UserControl
         Controls.Add(_metaLabel);
         Controls.Add(_hintLabel);
         Controls.Add(_qualityLabel);
+        _pinButton = new FavoriteStarButton { TabIndex = 0 };
+        _pinButton.Click += (_, _) => PinToggled?.Invoke(this);
+        Controls.Add(_pinButton);
 
         _connectButton = CreateActionButton("连接", ModernButtonKind.Primary, "连接到此设备");
         _editButton = CreateActionButton("编辑", ModernButtonKind.Secondary, "编辑设备设置");
@@ -226,6 +230,9 @@ internal sealed class ConnectionCardControl : UserControl
     public event Action<ConnectionCardControl>? EditClicked;
     public event Action<ConnectionCardControl>? DeleteClicked;
     public event Action<ConnectionCardControl>? DragRequested;
+    public event Action<ConnectionCardControl>? PinToggled;
+    internal bool IsPinned => _pinButton.IsPinned;
+    internal void SetPinned(bool pinned) => _pinButton.IsPinned = pinned;
 
     public void SetViewMode(ConnectionLibraryViewMode mode)
     {
@@ -257,6 +264,11 @@ internal sealed class ConnectionCardControl : UserControl
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (_pinButton.Focused && keyData is Keys.Enter or Keys.Space)
+        {
+            _pinButton.PerformClick();
+            return true;
+        }
         if (_previewButton.Focused && keyData is Keys.Enter or Keys.Space)
         {
             _previewButton.PerformClick();
@@ -338,15 +350,16 @@ internal sealed class ConnectionCardControl : UserControl
 
         var isList = ViewMode == ConnectionLibraryViewMode.List;
         var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal;
-        if (!isList && !isHorizontal && PreviewEnabled)
+        _pinButton.SetBounds(12, 16, 28, 28);
+        if (!isList && !isHorizontal && PreviewEnabled && PreviewOpen)
         {
             var previewWidth = Math.Max(110, Math.Min(220, (int)(Width * 0.45)));
             var previewLeft = Width - 18 - previewWidth;
             var previewQualityWidth = Math.Min(112, Math.Max(96, previewLeft - 120));
             var previewQualityLeft = Math.Max(138, previewLeft - previewQualityWidth - 8);
             var textWidthAvailable = Math.Max(40, previewLeft - 34);
-            _avatarPanel.SetBounds(18, 18, 34, 34);
-            _titleLabel.SetBounds(58, 18, Math.Max(48, previewQualityLeft - 66), 64);
+            _avatarPanel.SetBounds(48, 18, 34, 34);
+            _titleLabel.SetBounds(88, 18, Math.Max(40, previewQualityLeft - 96), 64);
             _qualityLabel.SetBounds(previewQualityLeft, 18, Math.Max(1, previewLeft - previewQualityLeft - 6), 70);
             _hostLabel.SetBounds(18, 90, textWidthAvailable, 24);
             _metaLabel.SetBounds(18, 116, textWidthAvailable, 23);
@@ -357,8 +370,8 @@ internal sealed class ConnectionCardControl : UserControl
         }
         if (!isList && !isHorizontal)
         {
-            _avatarPanel.SetBounds(18, 18, 34, 34);
-            _titleLabel.SetBounds(62, 18, Math.Max(48, Width - 196), 56);
+            _avatarPanel.SetBounds(48, 18, 34, 34);
+            _titleLabel.SetBounds(92, 18, Math.Max(40, Width - 226), 56);
             _qualityLabel.SetBounds(Math.Max(142, Width - 126), 18, 108, 68);
             _hostLabel.SetBounds(18, 90, Math.Max(1, Width - 36), 24);
             _metaLabel.SetBounds(18, 116, Math.Max(1, Width - 36), 23);
@@ -366,10 +379,10 @@ internal sealed class ConnectionCardControl : UserControl
             return;
         }
         var avatarSize = isList ? 40 : 44;
-        var avatarBounds = new Rectangle(isList ? 18 : 20, isList ? 18 : 20, avatarSize, avatarSize);
+        var avatarBounds = new Rectangle(isList ? 48 : 50, isList ? 18 : 20, avatarSize, avatarSize);
         _avatarPanel.SetBounds(avatarBounds.X, avatarBounds.Y, avatarBounds.Width, avatarBounds.Height);
 
-        var textX = isList ? 80 : 88;
+        var textX = isList ? 110 : 118;
         var textRight = isList || isHorizontal ? _actionPanel.Left - 16 : Width - 20;
         var qualityWidth = Math.Min(128, Math.Max(96, (textRight - textX) / 2));
         var qualityLeft = Math.Max(textX + 40, textRight - qualityWidth);

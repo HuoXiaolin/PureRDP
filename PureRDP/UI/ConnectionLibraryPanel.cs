@@ -33,9 +33,17 @@ internal sealed class ConnectionLibraryPanel : UserControl
     private ConnectionLibraryViewMode _viewMode = ConnectionLibraryViewMode.Cards;
     private ConnectionCardControl? _draggedCard;
     private bool _suppressViewModeEvent;
+    private readonly List<string> _pinnedHosts = [];
+    private readonly Func<ConnectionLibraryLayoutSettings> _readLayout;
+    private readonly Func<ConnectionLibraryLayoutSettings, bool> _writeLayout;
 
-    public ConnectionLibraryPanel()
+    public ConnectionLibraryPanel() : this(ConnectionLibraryService.Load, ConnectionLibraryService.Write) { }
+
+    internal ConnectionLibraryPanel(Func<ConnectionLibraryLayoutSettings> readLayout,
+        Func<ConnectionLibraryLayoutSettings, bool> writeLayout)
     {
+        _readLayout = readLayout;
+        _writeLayout = writeLayout;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         DoubleBuffered = true;
@@ -382,7 +390,9 @@ internal sealed class ConnectionLibraryPanel : UserControl
         _previewsEnabled = GlobalSettingsService.Load().Previews.Enabled;
         if (!_previewsEnabled)
             _openPreviewKeys.Clear();
-        var layout = ConnectionLibraryService.Load();
+        var layout = _readLayout();
+        _pinnedHosts.Clear();
+        _pinnedHosts.AddRange((layout.Pinned ?? []).Where(host => !string.IsNullOrWhiteSpace(host)).Distinct(StringComparer.OrdinalIgnoreCase));
         _viewMode = ParseViewMode(layout.ViewMode);
         _connections.Clear();
         _connections.AddRange(ApplySavedOrder(RecentConnectionsService.LoadAll(), layout.Order));
@@ -423,6 +433,11 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
         var updated = settings.Clone();
         _connections[index] = updated;
+        var pinIndex = _pinnedHosts.FindIndex(host => string.Equals(host, previousKey, StringComparison.OrdinalIgnoreCase));
+        if (pinIndex >= 0 && !string.IsNullOrWhiteSpace(updated.Hostname))
+            _pinnedHosts[pinIndex] = updated.Hostname;
+        if (pinIndex >= 0 && !string.Equals(previousKey, updated.Hostname, StringComparison.OrdinalIgnoreCase))
+            SaveOrder();
         if (!string.Equals(previousKey, updated.Hostname, StringComparison.OrdinalIgnoreCase))
             _availabilityStates.Remove(previousKey);
 
@@ -431,6 +446,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
         if (card == null) return false;
 
         card.UpdateSettings(updated);
+        card.SetPinned(_pinnedHosts.Contains(updated.Hostname ?? string.Empty, StringComparer.OrdinalIgnoreCase));
         card.PreviewSource = () => PreviewSourceProvider?.Invoke(card.Settings);
         card.PreviewHost = () => PreviewHostProvider?.Invoke(card.Settings);
         if (_availabilityStates.TryGetValue(updated.Hostname ?? string.Empty, out var availability))
@@ -459,7 +475,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
             _itemsPanel.Controls.Clear();
 
             var query = _searchBox.Text.Trim();
-            var visibleConnections = _connections
+            var visibleConnections = ConnectionLibraryService.ApplyPinnedOrder(_connections, _pinnedHosts)
                 .Where(connection => string.IsNullOrWhiteSpace(query) ||
                                      connection.DisplayName?.Contains(query, StringComparison.OrdinalIgnoreCase) == true ||
                                      connection.Hostname?.Contains(query, StringComparison.OrdinalIgnoreCase) == true ||
@@ -479,6 +495,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
                     PreviewHost = () => PreviewHostProvider?.Invoke(connection),
                 };
                 card.SetViewMode(_viewMode);
+                card.SetPinned(_pinnedHosts.Contains(connection.Hostname ?? string.Empty, StringComparer.OrdinalIgnoreCase));
                 if (_availabilityStates.TryGetValue(connection.Hostname ?? string.Empty, out var availability))
                     card.SetAvailability(availability);
                 card.ConnectClicked += Card_ConnectClicked;
@@ -486,6 +503,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
                 card.EditClicked += Card_EditClicked;
                 card.DeleteClicked += Card_DeleteClicked;
                 card.DragRequested += Card_DragRequested;
+                card.PinToggled += Card_PinToggled;
                 _itemsPanel.Controls.Add(card);
             }
 
@@ -538,7 +556,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
         _viewMode = item.Mode;
         UpdateViewButtons();
-        ConnectionLibraryService.Save(_viewMode, _connections.Select(connection => connection.Hostname ?? string.Empty));
+        PersistLayout();
         _itemsPanel.SuspendLayout();
         try
         {
@@ -639,6 +657,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
         if (_draggedCard == null)
             return;
 
+        MoveDraggedCard(e);
         RebuildOrderFromCards();
         SaveOrder();
         _draggedCard = null;
@@ -646,28 +665,24 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
     private void MoveDraggedCard(DragEventArgs e)
     {
-        var point = _itemsPanel.PointToClient(new Point(e.X, e.Y));
-        var target = _itemsPanel.GetChildAtPoint(point);
-        if (target is not ConnectionCardControl targetCard || targetCard == _draggedCard)
-            return;
-
-        var targetIndex = _itemsPanel.Controls.GetChildIndex(targetCard);
-        if (_viewMode is ConnectionLibraryViewMode.Cards or ConnectionLibraryViewMode.Horizontal)
-        {
-            var afterTarget = _viewMode == ConnectionLibraryViewMode.Horizontal
-                ? point.X > targetCard.Left + targetCard.Width / 2
-                : point.Y > targetCard.Top + targetCard.Height / 2;
-            if (afterTarget)
-                targetIndex++;
-        }
-
         var draggedCard = _draggedCard;
         if (draggedCard == null)
             return;
 
+        var point = _itemsPanel.PointToClient(new Point(e.X, e.Y));
+        var target = _itemsPanel.GetChildAtPoint(point);
+        if (target is not ConnectionCardControl targetCard || targetCard == draggedCard)
+            return;
+        if (targetCard.IsPinned != draggedCard.IsPinned)
+            return;
+
+        // SetChildIndex expects the final index, not an insertion boundary.
+        // Adding one for the lower half made an adjacent backward move a no-op.
+        // Occupy the hovered card's slot so repeated DragOver events stay stable.
+        var targetIndex = _itemsPanel.Controls.GetChildIndex(targetCard);
         var currentIndex = _itemsPanel.Controls.GetChildIndex(draggedCard);
         if (currentIndex != targetIndex)
-            _itemsPanel.Controls.SetChildIndex(draggedCard, Math.Min(targetIndex, _itemsPanel.Controls.Count - 1));
+            _itemsPanel.Controls.SetChildIndex(draggedCard, targetIndex);
     }
 
     private void Card_DragRequested(ConnectionCardControl card)
@@ -697,12 +712,47 @@ internal sealed class ConnectionLibraryPanel : UserControl
         _connections.AddRange(_itemsPanel.Controls
             .OfType<ConnectionCardControl>()
             .Select(card => card.Settings));
+        _pinnedHosts.Clear();
+        _pinnedHosts.AddRange(_itemsPanel.Controls.OfType<ConnectionCardControl>()
+            .Where(card => card.IsPinned).Select(card => card.Settings.Hostname!)
+            .Where(host => !string.IsNullOrWhiteSpace(host)));
     }
 
     private void SaveOrder()
     {
-        ConnectionLibraryService.Save(_viewMode, _connections.Select(connection => connection.Hostname ?? string.Empty));
-        _countLabel.Text = $"{_connections.Count} 台设备 · 拖动卡片可调整顺序";
+        PersistLayout();
+        if (string.IsNullOrWhiteSpace(_searchBox.Text))
+            _countLabel.Text = $"{_connections.Count} 台设备 · 拖动卡片可调整顺序";
+    }
+
+    private void PersistLayout()
+    {
+        var layout = _readLayout();
+        layout.ViewMode = _viewMode.ToString();
+        layout.Order = _connections.Select(connection => connection.Hostname ?? string.Empty)
+            .Where(host => !string.IsNullOrWhiteSpace(host)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        layout.Pinned = _pinnedHosts.ToList();
+        if (!_writeLayout(layout)) ShowStatus("列表已更新，但未能保存置顶或排序设置，请检查数据目录写入权限。");
+    }
+
+    private void Card_PinToggled(ConnectionCardControl card)
+    {
+        var hostname = card.Settings.Hostname;
+        if (string.IsNullOrWhiteSpace(hostname)) return;
+        var wasPinned = _pinnedHosts.RemoveAll(host => string.Equals(host, hostname, StringComparison.OrdinalIgnoreCase)) > 0;
+        if (!wasPinned) _pinnedHosts.Insert(0, hostname);
+        card.SetPinned(!wasPinned);
+        // Move existing controls, preserving active preview surfaces and focus.
+        var ranks = ConnectionLibraryService.ApplyPinnedOrder(_connections, _pinnedHosts)
+            .Select((connection, rank) => (Host: connection.Hostname ?? string.Empty, Rank: rank))
+            .GroupBy(item => item.Host, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Rank, StringComparer.OrdinalIgnoreCase);
+        var cards = _itemsPanel.Controls.OfType<ConnectionCardControl>()
+            .OrderBy(item => ranks.GetValueOrDefault(item.Settings.Hostname ?? string.Empty, int.MaxValue)).ToArray();
+        _itemsPanel.SuspendLayout();
+        try { for (var index = 0; index < cards.Length; index++) _itemsPanel.Controls.SetChildIndex(cards[index], index); }
+        finally { _itemsPanel.ResumeLayout(true); }
+        SaveOrder();
     }
 
     private void Card_ConnectClicked(ConnectionCardControl card)

@@ -15,6 +15,7 @@ internal sealed class ConnectionLibraryLayoutSettings
 {
     public string ViewMode { get; set; } = nameof(ConnectionLibraryViewMode.Cards);
     public List<string> Order { get; set; } = [];
+    public List<string> Pinned { get; set; } = [];
     public bool AutoTileSessions { get; set; }
 }
 
@@ -35,9 +36,12 @@ internal static class ConnectionLibraryService
                 if (!File.Exists(path))
                     continue;
 
-                return JsonSerializer.Deserialize<ConnectionLibraryLayoutSettings>(
+                var settings = JsonSerializer.Deserialize<ConnectionLibraryLayoutSettings>(
                            File.ReadAllText(path), JsonOptions)
                        ?? new ConnectionLibraryLayoutSettings();
+                settings.Order ??= [];
+                settings.Pinned ??= [];
+                return settings;
             }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
@@ -58,7 +62,15 @@ internal static class ConnectionLibraryService
         Write(settings);
     }
 
-    private static bool Write(ConnectionLibraryLayoutSettings settings)
+    internal static IEnumerable<ConnectionSettings> ApplyPinnedOrder(IEnumerable<ConnectionSettings> connections, IEnumerable<string> pinned)
+    {
+        var ranks = pinned.Where(host => !string.IsNullOrWhiteSpace(host))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select((host, rank) => (host, rank)).ToDictionary(item => item.host, item => item.rank, StringComparer.OrdinalIgnoreCase);
+        return connections.OrderBy(connection => ranks.GetValueOrDefault(connection.Hostname ?? string.Empty, int.MaxValue));
+    }
+
+    internal static bool Write(ConnectionLibraryLayoutSettings settings)
     {
         var json = JsonSerializer.Serialize(settings, JsonOptions);
 

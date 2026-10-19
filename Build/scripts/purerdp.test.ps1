@@ -9,7 +9,7 @@ try {
     $reports = Join-Path $repo 'outputs\ci-tests\TestResults'
     New-Item -ItemType Directory -Path $reports -Force | Out-Null
     $results = @()
-    foreach ($name in @('UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign')) {
+    foreach ($name in @('UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites')) {
         $watch = [Diagnostics.Stopwatch]::StartNew()
         $project = Join-Path $repo "Build\tests\$name\$name.csproj"
         $output = @(& $script:DotnetCommand run --project $project -c Release --no-launch-profile 2>&1 | ForEach-Object { "$_" })

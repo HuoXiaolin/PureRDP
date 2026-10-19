@@ -100,6 +100,8 @@ internal static class Program
             ((TextBox)Field(library, "_searchBox")).Clear();
             var connections = (IList)Field(library, "_connections");
             connections.Clear(); foreach (var fixture in fixtures) connections.Add(fixture);
+            var pins = (IList)Field(library, "_pinnedHosts");
+            pins.Clear(); pins.Add("192.0.2.10"); pins.Add("198.51.100.20:3390");
             ((IDictionary)Field(library, "_availabilityStates")).Clear();
             Call(library, "ApplyPreviewEnabled", true);
             Call(library, "ShowStatus", "演示数据（全部虚构） · 状态和网络指标仅作示例 · 未发起远程连接");

@@ -79,7 +79,7 @@ internal sealed class ConnectionCardControl : UserControl
         BorderStyle = BorderStyle.None;
         Cursor = Cursors.Hand;
         Margin = new Padding(UiDesignTokens.CardGap);
-        MinimumSize = new Size(210, 82);
+        MinimumSize = new Size(210, 56);
         TabStop = true;
         AccessibleRole = AccessibleRole.PushButton;
         AccessibleName = $"连接到 {_titleText}，{_hostText}";
@@ -109,7 +109,7 @@ internal sealed class ConnectionCardControl : UserControl
 
         _titleLabel = CreateTextLabel(_titleText, new Font(UiDesignTokens.FontFamily, 10.5F, FontStyle.Bold), UiDesignTokens.TextPrimary);
         _titleLabel.AutoEllipsis = true;
-        _titleLabel.TextAlign = ContentAlignment.TopLeft;
+        _titleLabel.TextAlign = ContentAlignment.MiddleLeft;
         _titleLabel.UseCompatibleTextRendering = true;
         _hostLabel = CreateTextLabel(_hostText, new Font("Segoe UI", 9F), UiDesignTokens.TextSecondary);
         _metaLabel = CreateTextLabel(_metaText, new Font("Segoe UI", 8.5F), UiDesignTokens.TextMuted);
@@ -147,7 +147,8 @@ internal sealed class ConnectionCardControl : UserControl
         {
             // Preview is content state: preserve the size assigned by the library.
             var showPreview = ViewMode == ConnectionLibraryViewMode.Cards && PreviewEnabled && PreviewOpen;
-            _preview.Visible = _previewTitle.Visible = showPreview;
+            _preview.Visible = showPreview;
+            _previewTitle.Visible = false;
             LayoutActionPanel();
             Invalidate();
             PreviewToggled?.Invoke(this, _previewButton.Checked);
@@ -220,7 +221,7 @@ internal sealed class ConnectionCardControl : UserControl
         };
         _qualityLabel.Visible = snapshot?.IsActive == true;
         _qualityLabel.AccessibleName = snapshot?.ToAccessibleText() ?? string.Empty;
-        LayoutTextAndAvatar();
+        LayoutActionPanel();
         Invalidate();
     }
 
@@ -252,13 +253,14 @@ internal sealed class ConnectionCardControl : UserControl
         }
 
         var showPreview = !isList && !isHorizontal && PreviewEnabled && PreviewOpen;
-        Height = Px(isList ? 112 : isHorizontal ? 132 : 220);
-        _preview.Visible = _previewTitle.Visible = showPreview;
+        Height = Px(isList ? 96 : isHorizontal ? 108 : 190);
+        _preview.Visible = showPreview;
+        _previewTitle.Visible = false;
         _previewButton.Visible = !isList && !isHorizontal && PreviewEnabled;
         var actionWidth = isList ? 196 : isHorizontal ? 196 : 0;
         var actionHeight = 34;
         _actionPanel.SetBounds(0, 0, Math.Max(1, actionWidth), actionHeight);
-        _hintLabel.Visible = !isList;
+        _hintLabel.Visible = true;
         LayoutActionPanel();
         Invalidate();
     }
@@ -309,10 +311,10 @@ internal sealed class ConnectionCardControl : UserControl
         SuspendLayout();
         try
         {
-            MinimumSize = new Size(Px(210), Px(82));
+            MinimumSize = new Size(Px(210), Px(56));
             Margin = new Padding(Px(UiDesignTokens.CardGap));
-            Height = Px(ViewMode == ConnectionLibraryViewMode.List ? 112 :
-                ViewMode == ConnectionLibraryViewMode.Horizontal ? 132 : 220);
+            Height = Px(ViewMode == ConnectionLibraryViewMode.List ? 96 :
+                ViewMode == ConnectionLibraryViewMode.Horizontal ? 108 : 190);
             LayoutActionPanel();
         }
         finally { ResumeLayout(false); }
@@ -384,50 +386,89 @@ internal sealed class ConnectionCardControl : UserControl
             return;
 
         var width = Logical(Width);
-        var isList = ViewMode == ConnectionLibraryViewMode.List;
-        var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal;
-        SetLogicalBounds(_pinButton, 12, 16, 28, 28);
-        if (!isList && !isHorizontal && PreviewEnabled && PreviewOpen)
+        var isList = ViewMode == ConnectionLibraryViewMode.List && width >= 540;
+        var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal && width >= 540;
+        foreach (var label in new[] { _titleLabel, _hostLabel, _metaLabel, _hintLabel, _qualityLabel })
+            ((CardTextLabel)label).SingleLine = ViewMode == ConnectionLibraryViewMode.List || ReferenceEquals(label, _titleLabel);
+        var qualityLines = (_connectionQuality?.ToDisplayText() ?? string.Empty).Split('\n');
+        if (ViewMode == ConnectionLibraryViewMode.List)
         {
-            var previewWidth = Math.Max(110, Math.Min(220, (int)(width * 0.45)));
+            // Explorer-style columns: every field remains on the same baseline.
+            _qualityLabel.Text = string.Join(" · ", qualityLines);
+            _qualityLabel.AutoEllipsis = true;
+            _qualityLabel.TextAlign = ContentAlignment.MiddleLeft;
+            SetLogicalBounds(_pinButton, width - 64, 14, 28, 28);
+            SetLogicalBounds(_avatarPanel, 16, 14, 28, 28);
+            SetLogicalBounds(_titleLabel, 54, 14, 104, 28);
+            SetLogicalBounds(_hostLabel, 166, 14, 160, 28);
+            SetLogicalBounds(_metaLabel, 334, 14, 120, 28);
+            SetLogicalBounds(_hintLabel, 462, 14, 150, 28);
+            SetLogicalBounds(_qualityLabel, 620, 14, Math.Max(1, Logical(_actionPanel.Left) - 632), 28);
+            return;
+        }
+        _qualityLabel.AutoEllipsis = false;
+        _qualityLabel.TextAlign = ContentAlignment.TopLeft;
+        _qualityLabel.Text = !isList && !isHorizontal && qualityLines.Length == 4
+            ? $"{qualityLines[0]} · {qualityLines[1]}\n{qualityLines[2]} · {qualityLines[3]}"
+            : _connectionQuality?.ToDisplayText() ?? string.Empty;
+        SetLogicalBounds(_pinButton, width - 64,
+            !isList && !isHorizontal ? 12 : 8, 28, 28);
+        if (ViewMode == ConnectionLibraryViewMode.Cards && width >= 700)
+        {
+            var showPreview = PreviewEnabled && PreviewOpen;
+            var bodyRight = showPreview ? width - 184 : width - 18;
+            var columnWidth = (bodyRight - 42) / 3;
+            SetLogicalBounds(_avatarPanel, 18, 16, 30, 30);
+            SetLogicalBounds(_titleLabel, 58, 16, width - 132, 30);
+            SetLogicalBounds(_hostLabel, 18, 50, columnWidth, 20);
+            SetLogicalBounds(_metaLabel, 30 + columnWidth, 50, columnWidth, 20);
+            SetLogicalBounds(_hintLabel, 42 + columnWidth * 2, 50, columnWidth, 20);
+            SetLogicalBounds(_qualityLabel, 18, 78, bodyRight - 18, 32);
+            if (showPreview)
+                SetLogicalBounds(_preview, width - 168, 48, 150, 150 * 9 / 16);
+            return;
+        }
+        if (ViewMode == ConnectionLibraryViewMode.Cards && PreviewEnabled && PreviewOpen)
+        {
+            // Keep identity across the full header; telemetry must never squeeze
+            // a short device name into a stack of individual letters.
+            var previewWidth = Math.Max(110, Math.Min(170, (width - 48) / 2));
             var previewLeft = width - 18 - previewWidth;
-            var previewQualityWidth = Math.Min(112, Math.Max(96, previewLeft - 120));
-            var previewQualityLeft = Math.Max(138, previewLeft - previewQualityWidth - 8);
             var textWidthAvailable = Math.Max(40, previewLeft - 34);
-            SetLogicalBounds(_avatarPanel, 48, 18, 34, 34);
-            SetLogicalBounds(_titleLabel, 88, 18, Math.Max(40, previewQualityLeft - 96), 64);
-            SetLogicalBounds(_qualityLabel, previewQualityLeft, 18, Math.Max(1, previewLeft - previewQualityLeft - 6), 70);
-            SetLogicalBounds(_hostLabel, 18, 90, textWidthAvailable, 24);
-            SetLogicalBounds(_metaLabel, 18, 116, textWidthAvailable, 23);
-            SetLogicalBounds(_hintLabel, 18, 142, textWidthAvailable, 22);
-            SetLogicalBounds(_previewTitle, previewLeft, 16, previewWidth, 22);
-            SetLogicalBounds(_preview, previewLeft, 43, previewWidth, Math.Min(104, previewWidth * 9 / 16));
+            SetLogicalBounds(_avatarPanel, 18, 16, 30, 30);
+            SetLogicalBounds(_titleLabel, 58, 16, Math.Max(40, width - 132), 30);
+            SetLogicalBounds(_hostLabel, 18, 48, textWidthAvailable, 20);
+            SetLogicalBounds(_metaLabel, 18, 70, textWidthAvailable, 18);
+            SetLogicalBounds(_hintLabel, 18, 90, textWidthAvailable, 18);
+            SetLogicalBounds(_qualityLabel, 18, 112, textWidthAvailable, 32);
+            SetLogicalBounds(_previewTitle, previewLeft, 49, previewWidth, 18);
+            SetLogicalBounds(_preview, previewLeft, 48, previewWidth, previewWidth * 9 / 16);
             return;
         }
         if (!isList && !isHorizontal)
         {
-            SetLogicalBounds(_avatarPanel, 48, 18, 34, 34);
-            SetLogicalBounds(_titleLabel, 92, 18, Math.Max(40, width - 226), 56);
-            SetLogicalBounds(_qualityLabel, Math.Max(142, width - 126), 18, 108, 68);
-            SetLogicalBounds(_hostLabel, 18, 90, Math.Max(1, width - 36), 24);
-            SetLogicalBounds(_metaLabel, 18, 116, Math.Max(1, width - 36), 23);
-            SetLogicalBounds(_hintLabel, 18, 142, Math.Max(1, width - 36), 22);
+            SetLogicalBounds(_avatarPanel, 18, 16, 30, 30);
+            SetLogicalBounds(_titleLabel, 58, 16, Math.Max(40, width - 132), 30);
+            SetLogicalBounds(_qualityLabel, 18, 112, Math.Max(1, width - 36), 32);
+            SetLogicalBounds(_hostLabel, 18, 48, Math.Max(1, width - 36), 20);
+            SetLogicalBounds(_metaLabel, 18, 70, Math.Max(1, width - 36), 18);
+            SetLogicalBounds(_hintLabel, 18, 90, Math.Max(1, width - 36), 18);
             return;
         }
         var avatarSize = isList ? 40 : 44;
-        var avatarBounds = new Rectangle(isList ? 48 : 50, isList ? 18 : 20, avatarSize, avatarSize);
+        var avatarBounds = new Rectangle(18, isList ? 18 : 20, avatarSize, avatarSize);
         SetLogicalBounds(_avatarPanel, avatarBounds.X, avatarBounds.Y, avatarBounds.Width, avatarBounds.Height);
 
-        var textX = isList ? 110 : 118;
+        var textX = isList ? 70 : 74;
         var textRight = isList || isHorizontal ? Logical(_actionPanel.Left) - 16 : width - 20;
         var qualityWidth = Math.Min(128, Math.Max(96, (textRight - textX) / 2));
         var qualityLeft = Math.Max(textX + 40, textRight - qualityWidth);
         var textWidth = Math.Max(40, qualityLeft - textX - 8);
         var top = isList ? 10 : 14;
-        SetLogicalBounds(_titleLabel, textX, top, textWidth, 42);
-        SetLogicalBounds(_hostLabel, textX, top + 44, textWidth, 20);
-        SetLogicalBounds(_metaLabel, textX, top + 66, textWidth, 18);
-        SetLogicalBounds(_hintLabel, textX, top + 86, textWidth, 18);
+        SetLogicalBounds(_titleLabel, textX, top, textWidth, 24);
+        SetLogicalBounds(_hostLabel, textX, top + 26, textWidth, 20);
+        SetLogicalBounds(_metaLabel, textX, top + 48, textWidth, 18);
+        SetLogicalBounds(_hintLabel, textX, top + 68, textWidth, 18);
         SetLogicalBounds(_qualityLabel, qualityLeft, isList ? 10 : isHorizontal ? 14 : 16,
             Math.Max(1, textRight - qualityLeft), 70);
     }
@@ -436,12 +477,16 @@ internal sealed class ConnectionCardControl : UserControl
     {
         if (_actionPanel == null || _dpiChanging) return;
         var width = Logical(Width);
-        var height = Logical(Height);
         var isList = ViewMode == ConnectionLibraryViewMode.List;
-        var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal;
+        var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal && width >= 540;
+        // Session state changes content, never tile geometry. Reserve the same
+        // body height before/after preview and connection-quality updates.
+        var height = isList ? 56 : isHorizontal ? 108 :
+            ViewMode == ConnectionLibraryViewMode.Cards && width >= 700 ? 178 : 190;
+        if (Height != Px(height)) Height = Px(height);
         var actionWidth = isList || isHorizontal ? 198 : Math.Max(1, width - 40);
-        SetLogicalBounds(_actionPanel, isList || isHorizontal ? width - actionWidth - 18 : 20,
-            isList || isHorizontal ? (height - 34) / 2 : height - 47, actionWidth, 34);
+        SetLogicalBounds(_actionPanel, isList ? width - actionWidth - 90 : isHorizontal ? width - actionWidth - 18 : 20,
+            isList ? 11 : isHorizontal ? Math.Max(40, (height - 34) / 2) : height - 42, actionWidth, 34);
         var connectWidth = isList || isHorizontal ? 82 : Math.Max(80, actionWidth - 120);
         SetLogicalBounds(_connectButton, 0, 0, connectWidth, 34);
         SetLogicalBounds(_editButton, connectWidth + 8, 0, 52, 34);
@@ -463,7 +508,8 @@ internal sealed class ConnectionCardControl : UserControl
             return;
 
         var showPreview = ViewMode == ConnectionLibraryViewMode.Cards && _previewEnabled && _previewButton.Checked;
-        _preview.Visible = _previewTitle.Visible = showPreview;
+        _preview.Visible = showPreview;
+        _previewTitle.Visible = false;
         _previewButton.Visible = ViewMode == ConnectionLibraryViewMode.Cards && _previewEnabled;
         LayoutActionPanel();
         Invalidate();
@@ -543,7 +589,7 @@ internal sealed class ConnectionCardControl : UserControl
 
     private static Label CreateTextLabel(string text, Font font, Color foreColor)
     {
-        return new Label
+        return new CardTextLabel
         {
             AutoSize = false,
             BackColor = Color.Transparent,
@@ -554,6 +600,20 @@ internal sealed class ConnectionCardControl : UserControl
             TextAlign = ContentAlignment.MiddleLeft,
             Enabled = true,
         };
+    }
+
+    private sealed class CardTextLabel : Label
+    {
+        [DefaultValue(false)]
+        internal bool SingleLine { get; set; }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (!SingleLine) { base.OnPaint(e); return; }
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
+                TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis |
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+        }
     }
 
     private static ModernButton CreateActionButton(string text, ModernButtonKind kind, string accessibleName)

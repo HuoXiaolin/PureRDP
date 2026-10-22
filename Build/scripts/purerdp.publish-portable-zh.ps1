@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 . $PSScriptRoot/_version.ps1
+. $PSScriptRoot/_source-export.ps1
 $Version = Get-PureRdpPackageVersion -VersionFile (Join-Path $repoRoot 'Build/targets/version.props') -ExplicitVersion $Version
 Write-Host "Package version: $Version (daily patch policy uses Beijing time)."
 $stageDirectory = Join-Path $repoRoot "outputs\$Version-independent-preview"
@@ -96,6 +97,10 @@ function Publish-Latest([string]$staging, [string]$outputRoot, [string]$kind) {
     $backup = [IO.Path]::GetFullPath((Join-Path $backupRoot $kind))
     if (-not $backup.StartsWith($repoRoot + '\outputs\release-history\', [StringComparison]::OrdinalIgnoreCase)) {
         throw "Invalid backup directory: $backup"
+    }
+    if ($kind -eq 'source') {
+        Publish-PureRdpSourceFiles -Staging $staging -Destination $latest -Backup (Join-Path $backup 'PureRDP')
+        return
     }
     if (Test-Path -LiteralPath $latest) {
         [void](New-Item -ItemType Directory -Path $backup -Force)

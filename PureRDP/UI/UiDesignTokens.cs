@@ -34,7 +34,7 @@ internal static class UiDesignTokens
     public const int PagePadding = 16;
     public const int HeaderHeight = 170;
     public const int ControlHeight = 36;
-    public const int CardGap = 10;
+    public const int CardGap = 6;
     public const int ListCardMinimumWidth = 560;
     public const string FontFamily = "Microsoft YaHei UI";
     public const int ButtonRadius = 8;

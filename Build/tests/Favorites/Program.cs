@@ -51,6 +51,56 @@ internal static class Program
         void Fill(Control target) { var connections = (IList)Field(target, "_connections"); connections.Clear(); foreach (var device in devices) connections.Add(device); Call(target, "RenderConnections"); }
         Fill(panel);
         var original = Cards(panel);
+        var viewportMode = (ComboBox)Field(panel, "_viewModeComboBox");
+        foreach (var view in new[] { 0, 1, 2 })
+        foreach (var viewport in new[] { 420, 900, 1400 })
+        {
+            viewportMode.SelectedIndex = view;
+            host.ClientSize = new Size(viewport, 800);
+            Application.DoEvents();
+            Call(panel, "UpdateCardSizes");
+            Application.DoEvents();
+            var flow = (Control)Field(panel, "_itemsPanel");
+            var rows = Cards(panel);
+            var availableWidth = flow.ClientSize.Width - flow.Padding.Horizontal;
+            var columnCount = view == 0 ? Math.Clamp(availableWidth / 360, 1, 3) : 1;
+            var rowIndex = 0;
+            foreach (var row in rows)
+            {
+                var expectedWidth = Math.Max(view == 2 ? 1200 : 280,
+                    availableWidth / columnCount + (rowIndex++ % columnCount < availableWidth % columnCount ? 1 : 0) - row.Margin.Horizontal);
+                Check(row.Width == expectedWidth, "Device must fill its responsive grid cell or full row.");
+                if (view == 2)
+                {
+                    var fields = new[] { "_titleLabel", "_hostLabel", "_metaLabel", "_hintLabel", "_qualityLabel" }
+                        .Select(name => (Control)Field(row, name)).ToArray();
+                    Check(fields.Select(field => field.Top).Distinct().Count() == 1 && row.Height == 56,
+                        "List view must retain a compact single-line field baseline.");
+                    Check(fields.All(field => field.Height == 28), "List fields must not wrap onto a second row.");
+                }
+            }
+            Check(view == 0 ? rows.GroupBy(row => row.Top).All(group => group.Count() <= columnCount) :
+                rows.Select(row => row.Left).Distinct().Count() == 1 &&
+                rows.Zip(rows.Skip(1), (a, b) => b.Top >= a.Bottom).All(value => value),
+                $"Each device must occupy its own complete row: view={view}, viewport={viewport}, bounds={string.Join(';', rows.Select(row => row.Bounds))}");
+            if (view == 0)
+            {
+                Check(rows.Take(columnCount).Select(row => row.Top).Distinct().Count() == 1,
+                    "First card row must contain the expected responsive column count.");
+                Check(rows[0].Left + rows.Take(columnCount).Sum(row => row.Width + row.Margin.Horizontal) - rows[0].Margin.Left
+                    == flow.Padding.Left + availableWidth, "Card columns must use the entire available row width.");
+            }
+            Directory.CreateDirectory(Path.Combine("outputs", "ui-review"));
+            if (viewport == 1400)
+            {
+                using var screenshot = new Bitmap(host.Width, host.Height);
+                host.DrawToBitmap(screenshot, host.ClientRectangle);
+                screenshot.Save(Path.Combine("outputs", "ui-review", $"FullRowView-{view}.png"));
+            }
+        }
+        host.ClientSize = new Size(1160, 800);
+        viewportMode.SelectedIndex = 0;
+        Application.DoEvents();
         Call(panel, "OnDpiChangedAfterParent", EventArgs.Empty);
         Call(panel, "OnDpiChangedAfterParent", EventArgs.Empty);
         Check((bool)Field(panel, "_dpiRefreshQueued"), "DPI notifications must queue a coalesced final layout pass.");

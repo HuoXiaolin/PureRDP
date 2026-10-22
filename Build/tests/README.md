@@ -16,4 +16,6 @@
 
 报告位于 `outputs/ci-tests/TestResults/`。离线 HWND 和模拟缩放检查不等于真实 RDP 会话、多显示器或物理显示器 DPI 切换验收。
 
+源码导出脚本另有不创建 GUI 的独立回归：`./Build/tests/SourceExport.Tests.ps1`。它只在临时目录使用演示仓库，核对重复导出保留 `.git`、未知文件和覆盖备份，以及拒绝不安全路径；不访问或推送真实远端。
+
 实现依据：[STARTUPINFOW 的 lpDesktop](https://learn.microsoft.com/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow)、[Windows Job Objects](https://learn.microsoft.com/windows/win32/procthread/job-objects)。

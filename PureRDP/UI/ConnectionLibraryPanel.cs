@@ -275,8 +275,8 @@ internal sealed class ConnectionLibraryPanel : UserControl
             AutoScroll = true,
             BackColor = UiDesignTokens.PageBackground,
             AccessibleName = "设备列表",
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
             Padding = new Padding(UiDesignTokens.PagePadding, UiDesignTokens.PagePadding, UiDesignTokens.PagePadding, 22),
             AllowDrop = true,
         };
@@ -534,10 +534,9 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
     private void ConfigureItemsPanel()
     {
-        _itemsPanel.FlowDirection = _viewMode == ConnectionLibraryViewMode.List
-            ? FlowDirection.TopDown
-            : FlowDirection.LeftToRight;
-        _itemsPanel.WrapContents = _viewMode != ConnectionLibraryViewMode.List;
+        _itemsPanel.FlowDirection = _viewMode == ConnectionLibraryViewMode.Cards
+            ? FlowDirection.LeftToRight : FlowDirection.TopDown;
+        _itemsPanel.WrapContents = _viewMode == ConnectionLibraryViewMode.Cards;
     }
 
     private void CenterEmptyPanel()
@@ -606,13 +605,17 @@ internal sealed class ConnectionLibraryPanel : UserControl
     private void UpdateCardSizes()
     {
         int Px(int value) => (int)Math.Round(value * DeviceDpi / 96.0);
-        var available = Math.Max(Px(280), _itemsPanel.ClientSize.Width - _itemsPanel.Padding.Horizontal - Px(20));
-        var preferred = Px(_viewMode == ConnectionLibraryViewMode.Horizontal ? 540 : _previewsEnabled ? 410 : 308);
-        var columns = Math.Max(1, available / (preferred + Px(16)));
-        var width = _viewMode == ConnectionLibraryViewMode.List ? Math.Max(Px(540), available - Px(16)) :
-            Math.Min(Px(_viewMode == ConnectionLibraryViewMode.Horizontal ? 720 : _previewsEnabled ? 560 : 380), available / columns - Px(16));
+        // Cards use one to three equally-sized columns; row/list views fill
+        // the viewport instead of leaving an unused strip on the right.
+        var available = _itemsPanel.ClientSize.Width - _itemsPanel.Padding.Horizontal;
+        var columns = _viewMode == ConnectionLibraryViewMode.Cards
+            ? Math.Clamp(available / Px(360), 1, 3) : 1;
+        var index = 0;
         foreach (var card in _itemsPanel.Controls.OfType<ConnectionCardControl>())
-            card.Width = width;
+        {
+            var cellWidth = available / columns + (index++ % columns < available % columns ? 1 : 0);
+            card.Width = Math.Max(Px(_viewMode == ConnectionLibraryViewMode.List ? 1200 : 280), cellWidth - card.Margin.Horizontal);
+        }
     }
 
     protected override void OnDpiChangedAfterParent(EventArgs e)

@@ -193,6 +193,9 @@ internal static class Program
                 card.GetType().GetMethod("OnDpiChangedAfterParent", Members)!.Invoke(card, new object[] { EventArgs.Empty });
                 card.PerformLayout();
                 var actions = (Control)Field(card, "_actionPanel");
+                var favorite = (Control)Field(card, "_pinButton");
+                Check(!favorite.Bounds.IntersectsWith(actions.Bounds),
+                    "Top-right favorite must not overlap actions in any view: " + modeName);
                 Check(actions.Bottom <= card.ClientSize.Height && actions.Top >= 0,
                     "DPI transition must keep actions inside card: " + modeName);
                 foreach (Control action in actions.Controls)
@@ -207,6 +210,62 @@ internal static class Program
             }
             card.Width = modeName == "List" ? 1000 : 560;
             Render(canvas, "DpiRecovered-" + modeName + (previewEnabled ? "-Preview" : ""));
+        }
+        card.GetType().GetProperty("PreviewEnabled", Members)!.SetValue(card, true);
+        card.GetType().GetMethod("SetViewMode")!.Invoke(card, new[] {
+            Enum.Parse(App.GetType("PureRDP.Configuration.ConnectionLibraryViewMode")!, "Cards") });
+        connection.GetType().GetProperty("DisplayName")!.SetValue(connection, "TBEA");
+        card.GetType().GetMethod("UpdateSettings", Members)!.Invoke(card, new[] { connection });
+        var quality = App.GetType("PureRDP.Services.ConnectionQualitySnapshot")!
+            .GetProperty("Measuring", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null);
+        card.GetType().GetMethod("SetConnectionQuality", Members)!.Invoke(card, new[] { quality });
+        foreach (var previewOpen in new[] { false, true })
+        foreach (var cardWidth in new[] { 308, 440, 560, 900 })
+        {
+            card.Width = cardWidth;
+            card.GetType().GetProperty("PreviewOpen", Members)!.SetValue(card, previewOpen);
+            var title = (Control)Field(card, "_titleLabel");
+            var host = (Control)Field(card, "_hostLabel");
+            var telemetry = (Control)Field(card, "_qualityLabel");
+            var preview = (Control)Field(card, "_preview");
+            var actions = (Control)Field(card, "_actionPanel");
+            Check(title.Width >= 176 && title.Height == 30, "Card title needs a full single-line header.");
+            var star = (Control)Field(card, "_pinButton");
+            Check(star.Left > title.Right && star.Right <= card.Width - 30,
+                "Favorite star must sit in the top-right without overlapping title or status.");
+            Check(host.Top - title.Bottom <= 12, "Device details must not leave an empty band below identity.");
+            Check(telemetry.Bottom <= actions.Top, "Compact telemetry must not overlap actions.");
+            Check(((Label)telemetry).Text.Split('\n').Length == 2, "Card telemetry must use two compact rows.");
+            if (previewOpen)
+            {
+                Check(Math.Abs(preview.Top - host.Top) <= 2 && preview.Bottom <= actions.Top, "Preview must align with the details region.");
+                Check(!telemetry.Bounds.IntersectsWith(preview.Bounds), "Telemetry must remain beside the preview.");
+                Check(Math.Abs(preview.Width * 9 / 16 - preview.Height) <= 1, "Preview must retain 16:9 proportions.");
+            }
+            Render(card, $"CompactCard-{cardWidth}" + (previewOpen ? "-Preview" : ""));
+        }
+        foreach (var stableMode in new[] { "Cards", "Horizontal", "List" })
+        foreach (var stableWidth in new[] { 308, 560, 900, 1200 })
+        {
+            card.GetType().GetMethod("SetViewMode")!.Invoke(card, new[] {
+                Enum.Parse(App.GetType("PureRDP.Configuration.ConnectionLibraryViewMode")!, stableMode) });
+            card.Width = stableWidth;
+            var fixedSize = card.Size;
+            var fixedActions = ((Control)Field(card, "_actionPanel")).Bounds;
+            foreach (var previewsAllowed in new[] { false, true })
+            foreach (var open in new[] { false, true, false })
+            foreach (var connected in new[] { false, true, false })
+            {
+                card.GetType().GetProperty("PreviewEnabled", Members)!.SetValue(card, previewsAllowed);
+                card.GetType().GetProperty("PreviewOpen", Members)!.SetValue(card, open);
+                card.GetType().GetMethod("SetConnectionQuality", Members)!.Invoke(card,
+                    new object?[] { connected ? quality : null });
+                var state = Enum.Parse(App.GetType("PureRDP.Services.DeviceAvailabilityState")!, connected ? "Online" : "Offline");
+                card.GetType().GetMethod("SetAvailability", Members)!.Invoke(card, new[] { state });
+                Check(card.Size == fixedSize, "Preview/connect/disconnect must not resize device: " + stableMode);
+                Check(((Control)Field(card, "_actionPanel")).Bounds == fixedActions,
+                    "Session state must not move the card action row: " + stableMode);
+            }
         }
         var tokens = App.GetType("PureRDP.UI.UiDesignTokens")!;
         var accent = (Color)tokens.GetField("Accent")!.GetValue(null)!;

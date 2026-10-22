@@ -1,7 +1,7 @@
 # Ensure unsigned powershell script execution is allowed: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned
 
 param (
-  [Parameter(Mandatory=$true)][String]$version,
+  [Parameter(Mandatory=$false)][String]$version,
   [Parameter(Mandatory=$false)][String]$runtime,
   [Parameter(Mandatory=$false)][String]$publishFolder
 )
@@ -12,6 +12,7 @@ Push-Location $PSScriptRoot/../..
 
 # Configure
 $framework = "net10.0-windows"
+$version = Get-PureRdpPackageVersion -VersionFile (Join-Path $PSScriptRoot '../targets/version.props') -ExplicitVersion $version
 
 # Publish MSIX package
 Publish-Msix -project PureRDP -version $version -framework $framework -runtime $runtime -publishFolder $publishFolder

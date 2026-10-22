@@ -1,10 +1,9 @@
 # 控制台手动状态刷新回归检查
 
-先编译主程序，再运行独立检查程序（需要 .NET 10 SDK 和 Windows Desktop Runtime）：
+通过隔离桌面入口构建并运行（需要 .NET 10 SDK 和 Windows Desktop Runtime）：
 
 ```powershell
-dotnet build PureRDP/PureRDP.csproj -c Release
-dotnet run --project Build/tests/StatusRefresh/StatusRefresh.csproj -c Release
+./Build/scripts/purerdp.test.ps1 -Suite StatusRefresh
 ```
 
 检查本机临时 TCP 端口的在线/离线变化、并发扫描、空设备列表和关闭后的安全处理，以及离屏控件的按钮布局、刷新反馈、重复点击抑制、失败恢复、卡片保留和关闭中刷新。连接采样检查覆盖未连接/已释放会话安全退出，以及等待已有采样任务。

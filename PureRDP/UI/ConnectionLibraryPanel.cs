@@ -33,6 +33,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
     private ConnectionLibraryViewMode _viewMode = ConnectionLibraryViewMode.Cards;
     private ConnectionCardControl? _draggedCard;
     private bool _suppressViewModeEvent;
+    private bool _dpiRefreshQueued;
     private readonly List<string> _pinnedHosts = [];
     private readonly Func<ConnectionLibraryLayoutSettings> _readLayout;
     private readonly Func<ConnectionLibraryLayoutSettings, bool> _writeLayout;
@@ -604,13 +605,38 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
     private void UpdateCardSizes()
     {
-        var available = Math.Max(280, _itemsPanel.ClientSize.Width - _itemsPanel.Padding.Horizontal - 20);
-        var preferred = _viewMode == ConnectionLibraryViewMode.Horizontal ? 540 : _previewsEnabled ? 410 : 308;
-        var columns = Math.Max(1, available / (preferred + 16));
-        var width = _viewMode == ConnectionLibraryViewMode.List ? Math.Max(540, available - 16) :
-            Math.Min(_viewMode == ConnectionLibraryViewMode.Horizontal ? 720 : _previewsEnabled ? 560 : 380, available / columns - 16);
+        int Px(int value) => (int)Math.Round(value * DeviceDpi / 96.0);
+        var available = Math.Max(Px(280), _itemsPanel.ClientSize.Width - _itemsPanel.Padding.Horizontal - Px(20));
+        var preferred = Px(_viewMode == ConnectionLibraryViewMode.Horizontal ? 540 : _previewsEnabled ? 410 : 308);
+        var columns = Math.Max(1, available / (preferred + Px(16)));
+        var width = _viewMode == ConnectionLibraryViewMode.List ? Math.Max(Px(540), available - Px(16)) :
+            Math.Min(Px(_viewMode == ConnectionLibraryViewMode.Horizontal ? 720 : _previewsEnabled ? 560 : 380), available / columns - Px(16));
         foreach (var card in _itemsPanel.Controls.OfType<ConnectionCardControl>())
             card.Width = width;
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        if (_dpiRefreshQueued || !IsHandleCreated || IsDisposed) return;
+        _dpiRefreshQueued = true;
+        // Descendant controls finish their DPI processing after this notification.
+        // Reapply manual bounds once after the complete window transition, not in
+        // the middle of WinForms scaling. Keep the existing cards and previews.
+        BeginInvoke((Action)(() =>
+        {
+            _dpiRefreshQueued = false;
+            if (IsDisposed || Disposing) return;
+            _itemsPanel.SuspendLayout();
+            try
+            {
+                UpdateCardSizes();
+                foreach (var card in _itemsPanel.Controls.OfType<ConnectionCardControl>())
+                    card.RefreshDpiLayout();
+            }
+            finally { _itemsPanel.ResumeLayout(true); }
+            Invalidate(true);
+        }));
     }
 
     private void RefreshConnectionQuality()

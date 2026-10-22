@@ -13,9 +13,11 @@
 		<Tags></Tags>
 		<PackageDescription>$(Description)</PackageDescription>
 
-		<!-- Keep the product version stable by default; release scripts may still override it explicitly. -->
+		<!-- Local package builds increment the patch once per Beijing calendar day.
+		     Normal builds read this version; explicit release tags never auto-increment. -->
 		<Version>2.0.0</Version>
 		<FileVersion>2.0.0.0</FileVersion>
+		<LastPackageVersionDate></LastPackageVersionDate>
 		<AssemblyVersion>$(FileVersion)</AssemblyVersion>
 		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 

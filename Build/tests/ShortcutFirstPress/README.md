@@ -1,8 +1,7 @@
 # 首次最小化快捷键回归检查
 
 ```powershell
-dotnet build PureRDP/PureRDP.csproj -c Release
-dotnet run --project Build/tests/ShortcutFirstPress/ShortcutFirstPress.csproj -c Release
+./Build/scripts/purerdp.test.ps1 -Suite ShortcutFirstPress
 ```
 
 模拟“钩子句柄非空，但钩子未收到首个组合键”的情况，将 Ctrl、Alt、Z 的消息送入过滤器，检查当前第一次按键立即排队并最小化全部窗口、长按不反向恢复、下一次独立按键正确恢复、真全屏标志保留、钩子与消息双路径不重复执行，以及未配置/冲突键正常放行。

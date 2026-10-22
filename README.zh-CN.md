@@ -2,7 +2,7 @@
 
 PureRDP 将常用远程桌面集中在一个中文工作台中，提供设备库、多窗口管理、只读预览、连接状态和统一设置。项目定位、主要功能及完整界面预览见 [项目首页](README.md)。
 
-本页侧重如何使用和维护应用；功能变化独立记录在 [更新日志](CHANGELOG.md)。
+本页侧重如何使用和维护应用；[更新日志](CHANGELOG.md) 只保留最近一次更新，更早记录见 [历史更新日志](CHANGELOG_HISTORY.md)。
 
 ## 快速开始
 
@@ -89,7 +89,7 @@ PureRDP 将常用远程桌面集中在一个中文工作台中，提供设备库
 
 ## 从源码生成 EXE
 
-GitHub Actions 使用 .NET 10，构建与发布均开启分析器。WinForms 设计器属性序列化检查（WFO1000）和编译器问题会阻断构建；第三方 IDISP 资源所有权提示仍输出为警告，需人工审查。CI 使用 runner 临时目录缓存 NuGet 包，运行 `Build/scripts/purerdp.test.ps1` 执行 8 组离线回归，报告位于 `outputs/ci-tests/TestResults/`。发布工作流从 Release 标签的源码构建，只上传不带运行时的 EXE 和说明文件。
+GitHub Actions 使用 .NET 10，构建与发布均开启分析器。WinForms 设计器属性序列化检查（WFO1000）和编译器问题会阻断构建；第三方 IDISP 资源所有权提示仍输出为警告，需人工审查。CI 使用 runner 临时目录缓存 NuGet 包，运行 `Build/scripts/purerdp.test.ps1` 执行 9 组离线回归，报告位于 `outputs/ci-tests/TestResults/`。发布工作流从 Release 标签的源码构建，只上传不带运行时的 EXE 和说明文件。
 
 需要 Windows、.NET 10 SDK 和 PowerShell。首次构建先恢复依赖，再编译应用项目：
 
@@ -103,20 +103,34 @@ dotnet build PureRDP/PureRDP.csproj -c Release
 发布脚本可通过 `-Dotnet` 指定本地 SDK 的 dotnet.exe，默认优先使用 `D:\Agant\toolchain\dotnet\dotnet.exe`。构建与发布脚本统一使用 `D:\Agant\toolchain\nuget\packages` 存放 NuGet 缓存，不再在项目内创建 `.nuget`。直接运行 dotnet 命令时，先执行 `. ./Build/scripts/_nuget-cache.ps1`。发布脚本会先恢复依赖并刷新缓存路径，再以 `--no-restore` 发布。默认只生成 Windows x64 不带运行时的单文件程序，不构建安装器，不生成压缩包或带运行时版本。
 
 - 运行版：`D:\Agant\Github_Releases\PureRDP\`。
-- 源码：`D:\Agant\Github_Source\PureRDP\`，内附 `outputs/2.0.0-independent-preview/PureRDP.exe`。
+- 源码：`D:\Agant\Github_Source\PureRDP\`，内附 `outputs/<当前版本>-independent-preview/PureRDP.exe`。
 - `-ReleaseDirectory` 和 `-SourceDirectory` 可修改输出父目录，其下统一使用 `PureRDP` 名称。替换前校验文件哈希，历史输出移到项目内可恢复备份；被运行中的程序占用时不会强行关闭进程。
 
 也可仅生成不带运行时的可执行文件：
 
 ```powershell
-dotnet publish PureRDP/PureRDP.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:PublishTrimmed=false -o outputs/2.0.0-independent-preview
+. ./Build/scripts/_version.ps1
+$versionFile = './Build/targets/version.props'
+$version = Get-PureRdpPackageVersion -VersionFile $versionFile
+$fileVersion = ([xml](Get-Content -LiteralPath $versionFile -Raw)).Project.PropertyGroup.FileVersion
+dotnet publish PureRDP/PureRDP.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:PublishTrimmed=false "-p:Version=$version" "-p:FileVersion=$fileVersion" -o "outputs/$version-independent-preview"
 ```
 
-离线 UI 回归检查（先构建应用的 Release 版本）：
+### 每日版本规则
+
+默认本地正式打包时，按北京时间（UTC+8）的自然日判断：当天第一次将版本号第三段加 1，例如 `2.0.0 → 2.0.1`；当天再次打包或失败后重试沿用同号。隔几天未打包，下一次也只加 1，不补涨。不会每天定时编译，也不改变主版本和第二段版本。
+
+`Build/targets/version.props` 同时记录当前版本、Windows 文件版本和 `LastPackageVersionDate`，它是需随源码保留的版本状态，不是可清理缓存。正式打包开始时原子分配版本，并用跨进程锁避免同一天重复递增；Windows 文件版本与程序集保持对应的四段格式。普通 `dotnet build`、构建/测试脚本只读取当前版本，不递增。
+
+默认打包请使用 `purerdp.publish-portable-zh.ps1`，无需传 `-Version`。确需固定版本时可显式传入 `-Version`，此时严格使用指定版本，不改本地每日状态；GitHub Release 构建同样严格使用标签版本。直接调用底层 `dotnet publish` 不会自动执行日增规则，需先按上例分配版本。修改规则本身或仅更新文档不会立即产生新版本。
+
+离线 UI 回归检查（统一入口自动构建，并使用不切换的隔离桌面，避免测试窗口在前台闪现）：
 
 ```powershell
-dotnet run --project Build/tests/UiDesign/UiDesign.csproj -c Release
+./Build/scripts/purerdp.test.ps1 -Suite UiDesign
 ```
+
+完整回归运行 `./Build/scripts/purerdp.test.ps1`；构建与测试入口也支持 `-Dotnet` 指定 SDK。隔离桌面创建失败会停止，不回退到前台执行。单项测试、输出及限制见 [回归说明](Build/tests/README.md)。
 
 编译、渲染和离线回归不等于真实 RDP 会话、高 DPI、多显示器或长时间运行验收。
 

@@ -51,6 +51,12 @@ internal static class Program
         void Fill(Control target) { var connections = (IList)Field(target, "_connections"); connections.Clear(); foreach (var device in devices) connections.Add(device); Call(target, "RenderConnections"); }
         Fill(panel);
         var original = Cards(panel);
+        Call(panel, "OnDpiChangedAfterParent", EventArgs.Empty);
+        Call(panel, "OnDpiChangedAfterParent", EventArgs.Empty);
+        Check((bool)Field(panel, "_dpiRefreshQueued"), "DPI notifications must queue a coalesced final layout pass.");
+        Application.DoEvents();
+        Check(!(bool)Field(panel, "_dpiRefreshQueued"), "Final DPI layout must complete after child controls finish scaling.");
+        Check(Cards(panel).SequenceEqual(original), "DPI recovery must preserve card instances, pin order and previews.");
         var connects = 0;
         panel.GetType().GetEvent("ConnectRequested")!.AddEventHandler(panel, (Action<object>)(_ => connects++));
         Check(original.All(card => !Pinned(card)), "Legacy config without pinned list must stay compatible.");

@@ -72,5 +72,6 @@ jobs:
             README.md
             README.zh-CN.md
             CHANGELOG.md
+            CHANGELOG_HISTORY.md
             LICENSE
           fail_on_unmatched_files: true

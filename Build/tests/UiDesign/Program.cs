@@ -179,6 +179,35 @@ internal static class Program
         using var card = (Control)New("UI.ConnectionCardControl", connection);
         canvas.Controls.Clear(); canvas.Controls.Add(card); card.Location = new Point(24, 24);
         Render(canvas, "DeviceCard");
+        foreach (var previewEnabled in new[] { false, true })
+        foreach (var modeName in new[] { "Cards", "Horizontal", "List" })
+        {
+            card.GetType().GetProperty("PreviewEnabled", Members)!.SetValue(card, previewEnabled);
+            var mode = Enum.Parse(App.GetType("PureRDP.Configuration.ConnectionLibraryViewMode")!, modeName);
+            card.GetType().GetMethod("SetViewMode")!.Invoke(card, new[] { mode });
+            foreach (var factor in new[] { 1.25F, .8F, 1.5F, 2F / 3F, 2F, .5F })
+            {
+                card.Width = modeName == "List" ? 1000 : 720;
+                typeof(Control).GetMethod("OnDpiChangedBeforeParent", Members)!.Invoke(card, new object[] { EventArgs.Empty });
+                card.Scale(new SizeF(factor, factor));
+                card.GetType().GetMethod("OnDpiChangedAfterParent", Members)!.Invoke(card, new object[] { EventArgs.Empty });
+                card.PerformLayout();
+                var actions = (Control)Field(card, "_actionPanel");
+                Check(actions.Bottom <= card.ClientSize.Height && actions.Top >= 0,
+                    "DPI transition must keep actions inside card: " + modeName);
+                foreach (Control action in actions.Controls)
+                    if (action.Visible)
+                        Check(action.Left >= 0 && action.Top >= 0 && action.Right <= actions.ClientSize.Width && action.Bottom <= actions.ClientSize.Height,
+                            "DPI transition must not clip or overlap action controls: " + modeName);
+                var visibleActions = actions.Controls.Cast<Control>().Where(action => action.Visible).ToArray();
+                for (var i = 0; i < visibleActions.Length; i++)
+                    for (var j = i + 1; j < visibleActions.Length; j++)
+                        Check(!visibleActions[i].Bounds.IntersectsWith(visibleActions[j].Bounds),
+                            "DPI transition must not overlap action buttons: " + modeName);
+            }
+            card.Width = modeName == "List" ? 1000 : 560;
+            Render(canvas, "DpiRecovered-" + modeName + (previewEnabled ? "-Preview" : ""));
+        }
         var tokens = App.GetType("PureRDP.UI.UiDesignTokens")!;
         var accent = (Color)tokens.GetField("Accent")!.GetValue(null)!;
         Check(Contrast(accent, Color.White) >= 4.5, "Primary button contrast must meet AA.");

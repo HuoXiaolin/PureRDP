@@ -1,14 +1,14 @@
 # UI design regression probe
 
-Build the main project in Release first, then run:
+Use the isolated-desktop runner (also builds the application):
 
 ```powershell
-dotnet run --project Build/tests/UiDesign/UiDesign.csproj -c Release
+./Build/scripts/purerdp.test.ps1 -Suite UiDesign
 ```
 
 Renders eight global-settings pages, device settings at two window sizes,
 console empty state, a fixture device card and retry dialog into
-`outputs/ui-review/`. Test windows are placed offscreen. It verifies retained
+`outputs/ui-review/`. Test windows run on a separate desktop that is never switched to. It verifies retained
 fields/password protection, scrollable settings, data-directory reporting,
 non-destructive controls and text contrast. It never saves settings, deletes
 data, registers startup or establishes a remote connection. Startup registration

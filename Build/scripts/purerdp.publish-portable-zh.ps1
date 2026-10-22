@@ -1,13 +1,14 @@
 param(
     [string]$Dotnet = '',
-    [string]$Version = '2.0.0',
+    [string]$Version = '',
     [string]$ReleaseDirectory = 'D:\Agant\Github_Releases',
     [string]$SourceDirectory = 'D:\Agant\Github_Source'
 )
 $ErrorActionPreference = 'Stop'
-$Version = $Version -replace '^[vV]', ''
-if ($Version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'Version must be numeric, e.g. 2.0.0 or v2.0.0.' }
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. $PSScriptRoot/_version.ps1
+$Version = Get-PureRdpPackageVersion -VersionFile (Join-Path $repoRoot 'Build/targets/version.props') -ExplicitVersion $Version
+Write-Host "Package version: $Version (daily patch policy uses Beijing time)."
 $stageDirectory = Join-Path $repoRoot "outputs\$Version-independent-preview"
 if ([string]::IsNullOrWhiteSpace($Dotnet)) {
     $localDotnet = 'D:\Agant\toolchain\dotnet\dotnet.exe'
@@ -28,7 +29,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Restore from the shared NuGet cache failed.' }
     -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=None -p:RunAnalyzers=true -p:RunAnalyzersDuringBuild=true -p:TreatWarningsAsErrors=true `
     "-p:Version=$Version" "-p:FileVersion=$fileVersion" -o $stageDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Framework-dependent publish failed.' }
-$releaseDocs = @('LICENSE', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md')
+$releaseDocs = @('LICENSE', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG_HISTORY.md')
 Copy-Item -LiteralPath @($releaseDocs | ForEach-Object { Join-Path $repoRoot $_ }) -Destination $stageDirectory -Force
 $publishId = [Guid]::NewGuid().ToString('N')
 $exportStage = Join-Path $repoRoot "outputs\.folder-publish-$publishId"
@@ -48,7 +49,7 @@ foreach ($folder in @('PureRDP', 'PureRDP.Installer', 'Build', 'docs', '.github'
             Where-Object { $_.FullName -notmatch '[\\/](bin|obj|\.git|TestResults)[\\/]' }
     }
 }
-foreach ($file in @('LICENSE', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md', '.gitignore', 'PureRDP.slnx', 'PureRDP.sln.DotSettings')) {
+foreach ($file in @('LICENSE', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG_HISTORY.md', '.gitignore', 'PureRDP.slnx', 'PureRDP.sln.DotSettings')) {
     $path = Join-Path $repoRoot $file
     if (Test-Path -LiteralPath $path) { $sourceFiles += Get-Item -LiteralPath $path }
 }

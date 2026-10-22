@@ -1,6 +1,7 @@
 # Ensure unsigned powershell script execution ist allowed: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned
 
 . $PSScriptRoot/_nuget-cache.ps1
+. $PSScriptRoot/_version.ps1
 $script:DotnetCommand = if (Test-Path -LiteralPath 'D:\Agant\toolchain\dotnet\dotnet.exe') { 'D:\Agant\toolchain\dotnet\dotnet.exe' } else { 'dotnet' }
 
 #

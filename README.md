@@ -76,7 +76,7 @@ PureRDP 是一款面向 Windows 的远程桌面连接管理工具。它以微软
 ## 文档与开发
 
 - [中文使用说明](README.zh-CN.md)：快捷键、资源重定向、数据位置、自启动和源码构建。
-- [更新日志](CHANGELOG.md)：按日期独立记录功能变化与修复。
+- [更新日志](CHANGELOG.md)：只保留最近一次功能变化与修复；更早内容见 [历史更新日志](CHANGELOG_HISTORY.md)。
 - [截图生成说明](docs/screenshots/README.md)：如何使用虚构测试数据重新生成页面截图。
 
 项目基于 C#、WinForms 和 .NET 10，使用 Windows RDP ActiveX；构建与回归需要 Windows 和 .NET 10 SDK。源码包含构建脚本与离线回归检查，但它们不能替代真实会话、高 DPI、多显示器和长时间运行验证。

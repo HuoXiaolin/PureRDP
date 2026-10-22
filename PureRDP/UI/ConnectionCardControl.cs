@@ -61,6 +61,7 @@ internal sealed class ConnectionCardControl : UserControl
     private bool _dragStarted;
     private bool _wasDragged;
     private bool _hovered;
+    private bool _dpiChanging;
 
     public ConnectionCardControl(ConnectionSettings settings)
     {
@@ -153,7 +154,7 @@ internal sealed class ConnectionCardControl : UserControl
             if (_previewButton.Checked)
                 _preview.RefreshPreview();
         };
-        _actionPanel = new Panel { BackColor = Color.Transparent };
+        _actionPanel = new Panel { BackColor = UiDesignTokens.Surface };
         _actionPanel.Controls.Add(_connectButton);
         _actionPanel.Controls.Add(_editButton);
         _actionPanel.Controls.Add(_deleteButton);
@@ -243,15 +244,15 @@ internal sealed class ConnectionCardControl : UserControl
         if (isList)
         {
             var parentWidth = Parent?.ClientSize.Width ?? 720;
-            Width = Math.Max(UiDesignTokens.ListCardMinimumWidth, parentWidth - 48);
+            Width = Math.Max(Px(UiDesignTokens.ListCardMinimumWidth), parentWidth - Px(48));
         }
         else
         {
-            Width = isHorizontal ? 540 : 308;
+            Width = Px(isHorizontal ? 540 : 308);
         }
 
         var showPreview = !isList && !isHorizontal && PreviewEnabled && PreviewOpen;
-        Height = isList ? 112 : isHorizontal ? 132 : 220;
+        Height = Px(isList ? 112 : isHorizontal ? 132 : 220);
         _preview.Visible = _previewTitle.Visible = showPreview;
         _previewButton.Visible = !isList && !isHorizontal && PreviewEnabled;
         var actionWidth = isList ? 196 : isHorizontal ? 196 : 0;
@@ -286,8 +287,42 @@ internal sealed class ConnectionCardControl : UserControl
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (_actionPanel != null) LayoutActionPanel();
+        if (_actionPanel != null && !_dpiChanging) LayoutActionPanel();
     }
+
+    protected override void OnDpiChangedBeforeParent(EventArgs e)
+    {
+        _dpiChanging = true;
+        base.OnDpiChangedBeforeParent(e);
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        _dpiChanging = false;
+        RefreshDpiLayout();
+    }
+
+    internal void RefreshDpiLayout()
+    {
+        if (_actionPanel == null || IsDisposed || _dpiChanging) return;
+        SuspendLayout();
+        try
+        {
+            MinimumSize = new Size(Px(210), Px(82));
+            Margin = new Padding(Px(UiDesignTokens.CardGap));
+            Height = Px(ViewMode == ConnectionLibraryViewMode.List ? 112 :
+                ViewMode == ConnectionLibraryViewMode.Horizontal ? 132 : 220);
+            LayoutActionPanel();
+        }
+        finally { ResumeLayout(false); }
+        Invalidate(true);
+    }
+
+    private int Px(int logical) => (int)Math.Round(logical * DeviceDpi / 96.0);
+    private int Logical(int physical) => (int)Math.Round(physical * 96.0 / DeviceDpi);
+    private void SetLogicalBounds(Control control, int x, int y, int width, int height)
+        => control.SetBounds(Px(x), Px(y), Math.Max(1, Px(width)), Math.Max(1, Px(height)));
 
     protected override void OnGotFocus(EventArgs e)
     {
@@ -345,75 +380,79 @@ internal sealed class ConnectionCardControl : UserControl
 
     private void LayoutTextAndAvatar()
     {
-        if (_actionPanel == null)
+        if (_actionPanel == null || _dpiChanging)
             return;
 
+        var width = Logical(Width);
         var isList = ViewMode == ConnectionLibraryViewMode.List;
         var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal;
-        _pinButton.SetBounds(12, 16, 28, 28);
+        SetLogicalBounds(_pinButton, 12, 16, 28, 28);
         if (!isList && !isHorizontal && PreviewEnabled && PreviewOpen)
         {
-            var previewWidth = Math.Max(110, Math.Min(220, (int)(Width * 0.45)));
-            var previewLeft = Width - 18 - previewWidth;
+            var previewWidth = Math.Max(110, Math.Min(220, (int)(width * 0.45)));
+            var previewLeft = width - 18 - previewWidth;
             var previewQualityWidth = Math.Min(112, Math.Max(96, previewLeft - 120));
             var previewQualityLeft = Math.Max(138, previewLeft - previewQualityWidth - 8);
             var textWidthAvailable = Math.Max(40, previewLeft - 34);
-            _avatarPanel.SetBounds(48, 18, 34, 34);
-            _titleLabel.SetBounds(88, 18, Math.Max(40, previewQualityLeft - 96), 64);
-            _qualityLabel.SetBounds(previewQualityLeft, 18, Math.Max(1, previewLeft - previewQualityLeft - 6), 70);
-            _hostLabel.SetBounds(18, 90, textWidthAvailable, 24);
-            _metaLabel.SetBounds(18, 116, textWidthAvailable, 23);
-            _hintLabel.SetBounds(18, 142, textWidthAvailable, 22);
-            _previewTitle.SetBounds(previewLeft, 16, previewWidth, 22);
-            _preview.SetBounds(previewLeft, 43, previewWidth, Math.Min(104, previewWidth * 9 / 16));
+            SetLogicalBounds(_avatarPanel, 48, 18, 34, 34);
+            SetLogicalBounds(_titleLabel, 88, 18, Math.Max(40, previewQualityLeft - 96), 64);
+            SetLogicalBounds(_qualityLabel, previewQualityLeft, 18, Math.Max(1, previewLeft - previewQualityLeft - 6), 70);
+            SetLogicalBounds(_hostLabel, 18, 90, textWidthAvailable, 24);
+            SetLogicalBounds(_metaLabel, 18, 116, textWidthAvailable, 23);
+            SetLogicalBounds(_hintLabel, 18, 142, textWidthAvailable, 22);
+            SetLogicalBounds(_previewTitle, previewLeft, 16, previewWidth, 22);
+            SetLogicalBounds(_preview, previewLeft, 43, previewWidth, Math.Min(104, previewWidth * 9 / 16));
             return;
         }
         if (!isList && !isHorizontal)
         {
-            _avatarPanel.SetBounds(48, 18, 34, 34);
-            _titleLabel.SetBounds(92, 18, Math.Max(40, Width - 226), 56);
-            _qualityLabel.SetBounds(Math.Max(142, Width - 126), 18, 108, 68);
-            _hostLabel.SetBounds(18, 90, Math.Max(1, Width - 36), 24);
-            _metaLabel.SetBounds(18, 116, Math.Max(1, Width - 36), 23);
-            _hintLabel.SetBounds(18, 142, Math.Max(1, Width - 36), 22);
+            SetLogicalBounds(_avatarPanel, 48, 18, 34, 34);
+            SetLogicalBounds(_titleLabel, 92, 18, Math.Max(40, width - 226), 56);
+            SetLogicalBounds(_qualityLabel, Math.Max(142, width - 126), 18, 108, 68);
+            SetLogicalBounds(_hostLabel, 18, 90, Math.Max(1, width - 36), 24);
+            SetLogicalBounds(_metaLabel, 18, 116, Math.Max(1, width - 36), 23);
+            SetLogicalBounds(_hintLabel, 18, 142, Math.Max(1, width - 36), 22);
             return;
         }
         var avatarSize = isList ? 40 : 44;
         var avatarBounds = new Rectangle(isList ? 48 : 50, isList ? 18 : 20, avatarSize, avatarSize);
-        _avatarPanel.SetBounds(avatarBounds.X, avatarBounds.Y, avatarBounds.Width, avatarBounds.Height);
+        SetLogicalBounds(_avatarPanel, avatarBounds.X, avatarBounds.Y, avatarBounds.Width, avatarBounds.Height);
 
         var textX = isList ? 110 : 118;
-        var textRight = isList || isHorizontal ? _actionPanel.Left - 16 : Width - 20;
+        var textRight = isList || isHorizontal ? Logical(_actionPanel.Left) - 16 : width - 20;
         var qualityWidth = Math.Min(128, Math.Max(96, (textRight - textX) / 2));
         var qualityLeft = Math.Max(textX + 40, textRight - qualityWidth);
         var textWidth = Math.Max(40, qualityLeft - textX - 8);
         var top = isList ? 10 : 14;
-        _titleLabel.SetBounds(textX, top, textWidth, 42);
-        _hostLabel.SetBounds(textX, top + 44, textWidth, 20);
-        _metaLabel.SetBounds(textX, top + 66, textWidth, 18);
-        _hintLabel.SetBounds(textX, top + 86, textWidth, 18);
-        _qualityLabel.SetBounds(qualityLeft, isList ? 10 : isHorizontal ? 14 : 16,
+        SetLogicalBounds(_titleLabel, textX, top, textWidth, 42);
+        SetLogicalBounds(_hostLabel, textX, top + 44, textWidth, 20);
+        SetLogicalBounds(_metaLabel, textX, top + 66, textWidth, 18);
+        SetLogicalBounds(_hintLabel, textX, top + 86, textWidth, 18);
+        SetLogicalBounds(_qualityLabel, qualityLeft, isList ? 10 : isHorizontal ? 14 : 16,
             Math.Max(1, textRight - qualityLeft), 70);
     }
 
     private void LayoutActionPanel()
     {
+        if (_actionPanel == null || _dpiChanging) return;
+        var width = Logical(Width);
+        var height = Logical(Height);
         var isList = ViewMode == ConnectionLibraryViewMode.List;
         var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal;
-        var actionWidth = isList || isHorizontal ? 198 : Math.Max(1, Width - 40);
-        _actionPanel.SetBounds(isList || isHorizontal ? Width - actionWidth - 18 : 20,
-            isList || isHorizontal ? (Height - 34) / 2 : Height - 47, actionWidth, 34);
+        var actionWidth = isList || isHorizontal ? 198 : Math.Max(1, width - 40);
+        SetLogicalBounds(_actionPanel, isList || isHorizontal ? width - actionWidth - 18 : 20,
+            isList || isHorizontal ? (height - 34) / 2 : height - 47, actionWidth, 34);
         var connectWidth = isList || isHorizontal ? 82 : Math.Max(80, actionWidth - 120);
-        _connectButton.SetBounds(0, 0, connectWidth, 34);
-        _editButton.SetBounds(connectWidth + 8, 0, 52, 34);
-        _deleteButton.SetBounds(connectWidth + 64, 0, 52, 34);
+        SetLogicalBounds(_connectButton, 0, 0, connectWidth, 34);
+        SetLogicalBounds(_editButton, connectWidth + 8, 0, 52, 34);
+        SetLogicalBounds(_deleteButton, connectWidth + 64, 0, 52, 34);
         if (!isList && !isHorizontal && PreviewEnabled)
         {
             var primaryWidth = Math.Max(50, (actionWidth - 128) / 2);
-            _connectButton.SetBounds(0, 0, primaryWidth, 34);
-            _previewButton.SetBounds(primaryWidth + 8, 0, primaryWidth, 34);
-            _editButton.SetBounds(actionWidth - 112, 0, 52, 34);
-            _deleteButton.SetBounds(actionWidth - 52, 0, 52, 34);
+            SetLogicalBounds(_connectButton, 0, 0, primaryWidth, 34);
+            SetLogicalBounds(_previewButton, primaryWidth + 8, 0, primaryWidth, 34);
+            SetLogicalBounds(_editButton, actionWidth - 112, 0, 52, 34);
+            SetLogicalBounds(_deleteButton, actionWidth - 52, 0, 52, 34);
         }
         LayoutTextAndAvatar();
     }

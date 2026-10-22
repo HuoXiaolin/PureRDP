@@ -1,18 +1,43 @@
-param([string]$version = '2.0.0')
+param(
+    [string]$version = '', [string]$Dotnet = '',
+    [ValidateSet('All', 'UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites', 'DailyVersion')]
+    [string]$Suite = 'All',
+    [switch]$DesktopIsolated
+)
 $ErrorActionPreference = 'Stop'
 . $PSScriptRoot/_core.ps1
+if (-not [string]::IsNullOrWhiteSpace($Dotnet)) { $script:DotnetCommand = $Dotnet }
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if (-not ('PureRdpTestDesktop' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'TestDesktop.cs') }
+if (-not $DesktopIsolated) {
+    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-DesktopIsolated', '-Dotnet', $script:DotnetCommand, '-Suite', $Suite)
+    if ($version) { $arguments += @('-version', $version) }
+    $exitCode = [PureRdpTestDesktop]::Run((Join-Path $PSHOME 'pwsh.exe'), $arguments, $repo)
+    if ($exitCode -ne 0) { throw "Isolated regressions failed (exit $exitCode); see test output and TestResults." }
+    $global:LASTEXITCODE = 0
+    return
+}
+if (-not [PureRdpTestDesktop]::CurrentDesktop().StartsWith('PureRDPTests_', [StringComparison]::Ordinal)) {
+    throw 'GUI tests must run on an isolated desktop; refusing visible-window fallback.'
+}
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Push-Location $repo
 try {
-    & "$PSScriptRoot/purerdp.build.ps1" -version $version
+    & "$PSScriptRoot/purerdp.build.ps1" -version $version -Dotnet $script:DotnetCommand
     if ($LASTEXITCODE -ne 0) { throw 'Application build failed.' }
-    $reports = Join-Path $repo 'outputs\ci-tests\TestResults'
+    $reports = if ($Suite -eq 'All') { Join-Path $repo 'outputs\ci-tests\TestResults' }
+        else { Join-Path $repo "outputs\ci-tests\SelectedSuite-$Suite" }
     New-Item -ItemType Directory -Path $reports -Force | Out-Null
     $results = @()
-    foreach ($name in @('UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites')) {
+    foreach ($name in @('UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites', 'DailyVersion')) {
+        if ($Suite -ne 'All' -and $name -ne $Suite) { continue }
         $watch = [Diagnostics.Stopwatch]::StartNew()
         $project = Join-Path $repo "Build\tests\$name\$name.csproj"
-        $output = @(& $script:DotnetCommand run --project $project -c Release --no-launch-profile 2>&1 | ForEach-Object { "$_" })
+        $output = @(if ($name -eq 'DailyVersion') {
+            & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $repo 'Build/tests/DailyVersion/DailyVersion.ps1') 2>&1 | ForEach-Object { "$_" }
+        } else {
+            & $script:DotnetCommand run --project $project -c Release --no-launch-profile 2>&1 | ForEach-Object { "$_" }
+        })
         $code = $LASTEXITCODE
         $watch.Stop()
         $output | ForEach-Object { Write-Host $_ }

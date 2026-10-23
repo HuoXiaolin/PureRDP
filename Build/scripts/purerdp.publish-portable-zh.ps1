@@ -30,6 +30,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Restore from the shared NuGet cache failed.' }
     -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=None -p:RunAnalyzers=true -p:RunAnalyzersDuringBuild=true -p:TreatWarningsAsErrors=true `
     "-p:Version=$Version" "-p:FileVersion=$fileVersion" -o $stageDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Framework-dependent publish failed.' }
+$publishedInfo = (Get-Item -LiteralPath (Join-Path $stageDirectory 'PureRDP.exe')).VersionInfo
+if ($publishedInfo.FileVersion -ne $fileVersion -or $publishedInfo.ProductVersion -ne $Version) {
+    throw "Published EXE version mismatch: expected $Version / $fileVersion; got $($publishedInfo.ProductVersion) / $($publishedInfo.FileVersion)."
+}
+Write-Host "Verified EXE product version $Version; file version $fileVersion."
 $releaseDocs = @('LICENSE', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG_HISTORY.md')
 Copy-Item -LiteralPath @($releaseDocs | ForEach-Object { Join-Path $repoRoot $_ }) -Destination $stageDirectory -Force
 $publishId = [Guid]::NewGuid().ToString('N')

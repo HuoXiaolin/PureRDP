@@ -53,6 +53,11 @@ Check ((Get-PureRdpPackageVersion $four -Now '2026-10-20T00:00:00Z') -eq '1.2.4.
 Check ($saved.Project.PropertyGroup.FileVersion -eq '1.2.4.7') 'Preserve explicit fourth component.'
 $year = Fixture 'year' '2.9.5' '2026-12-31'
 Check ((Get-PureRdpPackageVersion $year -Now '2027-01-01T00:00:00+08:00') -eq '2.9.6') 'Year changes do not reset the version.'
+$carry = Fixture 'carry' '2.0.9' '2026-10-22'
+Check ((Get-PureRdpPackageVersion $carry -Now '2026-10-23T00:00:00+08:00') -eq '2.1.0') 'Patch 9 carries into minor, not 2.0.10.'
+Check ((Get-PureRdpPackageVersion $carry -Now '2026-10-23T12:00:00+08:00') -eq '2.1.0') 'Carry counts as the only daily increment.'
+$minorCarry = Fixture 'minor-carry' '2.9.9'
+Check ((Get-PureRdpPackageVersion $minorCarry -Now '2026-10-23T00:00:00+08:00') -eq '2.10.0') 'Carry must not change the major version.'
 $badDate = Fixture 'bad-date' '1.0.0' 'invalid'
 Expect-UnchangedFailure $badDate { Get-PureRdpPackageVersion $badDate -Now '2026-10-20T00:00:00Z' }
 $limit = Fixture 'limit' '1.0.65534'

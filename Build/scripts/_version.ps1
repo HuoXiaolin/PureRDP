@@ -67,7 +67,11 @@ function Get-PureRdpPackageVersion {
         }
         $parts = @($version.Split('.') | ForEach-Object { [int]$_ })
         if ($parts[2] -ge 65534) { throw 'Patch version limit reached; explicitly choose a new major/minor version.' }
-        $parts[2]++
+        if ($parts[2] -eq 9) {
+            if ($parts[1] -ge 65534) { throw 'Minor version limit reached; explicitly choose a new major version.' }
+            $parts[1]++
+            $parts[2] = 0
+        } else { $parts[2]++ }
         $version = $parts -join '.'
         $fileVersion = if ($parts.Count -eq 3) { "$version.0" } else { $version }
         $versionNode.InnerText = $version

@@ -576,21 +576,17 @@ internal sealed class RdpClientService : IDisposable
         if (!string.IsNullOrWhiteSpace(port))
             _rdpClient.AdvancedSettings9.RDPPort = int.Parse(port);
 
-        // Credential Manager has one TERMSRV identity per server. Synchronize
-        // an existing saved credential before the ActiveX control starts so a
-        // changed profile username cannot be replaced by an older account.
-        if (_connectionSettings.Username != null)
-            RdpCredentialService.UpdateSavedUsername(_connectionSettings.Hostname,
-                _connectionSettings.Username.CombineUsernameAndDomain(_connectionSettings.Domain));
-
         if (_connectionSettings.Domain != null)
             _rdpClient.Domain = _connectionSettings.Domain;
 
         if (_connectionSettings.Username != null)
             _rdpClient.UserName = _connectionSettings.Username;
 
-        if (_connectionSettings.Password != null)
-            _rdpClient.AdvancedSettings9.ClearTextPassword = _connectionSettings.Password;
+        var password = _connectionSettings.Password ?? RdpCredentialService.ReadConnectionPassword(
+            _connectionSettings.Hostname,
+            _connectionSettings.Username.CombineUsernameAndDomain(_connectionSettings.Domain));
+        if (password != null)
+            _rdpClient.AdvancedSettings9.ClearTextPassword = password;
 
         if (_connectionSettings.EnableCredSsp != null)
             _rdpClient.AdvancedSettings9.EnableCredSspSupport = _connectionSettings.EnableCredSsp.Value;

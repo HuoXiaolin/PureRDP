@@ -8,9 +8,8 @@ using System.Windows.Forms;
 namespace PureRDP.Services;
 
 /// <summary>
-/// Hosts the native RDP ActiveX control while forwarding the border hit-test
-/// needed by a borderless PureRDP window. The remote desktop remains flush
-/// with the window edge; no visible resize rail is required.
+/// Hosts the native RDP ActiveX control, routing window gestures through the
+/// same custom path as nested HWND input instead of native modal sizing.
 /// </summary>
 internal sealed class RdpClientWindowHost : AxMsRdpClient10NotSafeForScripting
 {
@@ -18,21 +17,16 @@ internal sealed class RdpClientWindowHost : AxMsRdpClient10NotSafeForScripting
     {
         if (FindForm() is FormRdpClient form)
         {
+            if (form.TryHandleWindowMoveInput(ref m)) return;
+            if (form.TryHandleWindowResizeInput(ref m)) return;
             var screenPoint = IsMouseMessage(m.Msg)
                 ? GetScreenPoint(m)
                 : Cursor.Position;
 
-            // The toolbar is a separate top-level overlay. Its transparent
-            // padding can still cause the native RDP child to receive the
-            // message at the screen edge; never let that padding enter the
-            // resize path.
+            // Guard stale messages queued before the overlay was expanded.
+            // Toolbar bounds must never become native resize/capture input.
             if (form.IsToolbarArea(screenPoint))
             {
-                // The transparent padding is intentionally click-through, but
-                // it must be client input. If the ActiveX child reports a
-                // non-client hit at the screen edge, Windows starts a native
-                // resize/capture gesture and subsequent remote clicks only
-                // produce the system beep until the window is recreated.
                 if (m.Msg == Interop.WM_NCHITTEST)
                 {
                     m.Result = (IntPtr)Interop.HTCLIENT;
@@ -47,32 +41,18 @@ internal sealed class RdpClientWindowHost : AxMsRdpClient10NotSafeForScripting
                 return;
             }
 
-            // The ActiveX control receives mouse messages before the
-            // borderless Form does. Use screen coordinates so the hit test is
-            // independent of the host's client-area origin and DPI scaling.
-            var borderlessHitTest = form.GetBorderlessWindowHitTest(screenPoint);
-            if (m.Msg == Interop.WM_NCHITTEST && borderlessHitTest != Interop.HTCLIENT)
+            // Keep non-client hit testing out of DefWindowProc. Edge presses
+            // below and in the queue filter arm our custom resize instead.
+            if (m.Msg == Interop.WM_NCHITTEST && form.IsRemoteWindowResizable)
             {
-                m.Result = (IntPtr)borderlessHitTest;
-                return;
-            }
-
-            if ((m.Msg is Interop.WM_LBUTTONDOWN or Interop.WM_NCLBUTTONDOWN) &&
-                borderlessHitTest == Interop.HTCAPTION)
-            {
-                // The native RDP child receives the click instead of the
-                // borderless parent. Forward caption dragging to the parent
-                // so showing the floating control bar cannot lock movement.
-                WindowChromeInterop.ReleaseCapture();
-                WindowChromeInterop.SendMessage(form.Handle, Interop.WM_NCLBUTTONDOWN,
-                    (IntPtr)Interop.HTCAPTION, IntPtr.Zero);
+                m.Result = (IntPtr)Interop.HTCLIENT;
                 return;
             }
 
             var hitTest = form.GetRemoteResizeHitTest(screenPoint);
             if ((m.Msg is Interop.WM_LBUTTONDOWN or Interop.WM_NCLBUTTONDOWN) && hitTest != Interop.HTCLIENT)
             {
-                form.BeginRemoteWindowResize(hitTest);
+                form.BeginRemoteWindowResize(hitTest, screenPoint);
                 return;
             }
         }

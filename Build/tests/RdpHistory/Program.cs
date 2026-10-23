@@ -66,6 +66,62 @@ internal static class Program
         populate.Invoke(form, ["SavedUser", null, "HintUser"]);
         Check(username.Text == "", "late lookup cannot override manual clearing");
         Check(((TextBox)Field(form, "tbPassword")).Text == "", "no plaintext password imported");
-        Console.WriteLine($"PASS: {_checks} history checks; current-user registry read only, no credentials copied or settings saved.");
+        // Own a unique synthetic credential only; never enumerate/read real
+        // passwords or replace a user's existing TERMSRV entry.
+        var credentialType = App.GetType("PureRDP.Services.RdpCredentialService")!;
+        object? Credential(string method, params object?[] args)
+            => credentialType.GetMethod(method, Static)!.Invoke(null, args);
+        var testHost = "purerdp-regression-" + Guid.NewGuid().ToString("N") + ".invalid:3391";
+        var secret = "fixture-only-密码-123";
+        var vaultAvailable = true;
+        try
+        {
+            Credential("SaveConnectionPassword", testHost, "EXAMPLE\\Demo", secret);
+            for (var attempt = 0; attempt < 3; attempt++)
+                Check((string?)Credential("ReadConnectionPassword", testHost, "EXAMPLE\\Demo") == secret,
+                    "Repeated connections must reload the saved password.");
+            Check(Credential("ReadConnectionPassword", testHost, "OtherUser") == null,
+                "A different account must not reuse a previous account's secret.");
+            Check(Credential("ReadConnectionPassword", testHost.Replace(":3391", ":3392"), "EXAMPLE\\Demo") == null,
+                "Different endpoint ports must not share private credentials.");
+            Check((string?)Credential("CredentialsExist", testHost) == "EXAMPLE\\Demo",
+                "Settings must recognize the protected saved credential.");
+            var rdpPath = Path.Combine(Path.GetTempPath(), "purerdp-password-" + Guid.NewGuid().ToString("N") + ".rdp");
+            try
+            {
+                var profileType = App.GetType("PureRDP.Configuration.ConnectionSettings")!;
+                var profile = Activator.CreateInstance(profileType, true)!;
+                profileType.GetProperty("Hostname")!.SetValue(profile, testHost);
+                profileType.GetProperty("Username")!.SetValue(profile, "EXAMPLE\\Demo");
+                profileType.GetProperty("Password")!.SetValue(profile, secret);
+                var rdpService = App.GetType("PureRDP.Services.RdpFileService")!;
+                rdpService.GetMethod("SaveToFile", Static)!.Invoke(null, [profile, rdpPath]);
+                var reloaded = rdpService.GetMethod("ReadFromFile", Static)!.Invoke(null, [rdpPath])!;
+                Check(profileType.GetProperty("Password")!.GetValue(reloaded) == null,
+                    "Reloaded device must not contain a plaintext password.");
+                Check(!File.ReadAllText(rdpPath, System.Text.Encoding.Unicode).Contains(secret),
+                    "Saved device file must not expose the secret.");
+                Check((string?)Credential("ReadConnectionPassword", profileType.GetProperty("Hostname")!.GetValue(reloaded),
+                    profileType.GetProperty("Username")!.GetValue(reloaded)) == secret,
+                    "A reopened device must still resolve its protected password.");
+            }
+            finally { if (File.Exists(rdpPath)) File.Delete(rdpPath); }
+            Credential("SaveConnectionPassword", testHost, "EXAMPLE\\Demo", "replacement-fixture");
+            Check((string?)Credential("ReadConnectionPassword", testHost, "EXAMPLE\\Demo") == "replacement-fixture",
+                "An explicit replacement password must persist.");
+        }
+        catch (TargetInvocationException exception) when
+            (exception.InnerException is System.ComponentModel.Win32Exception { NativeErrorCode: 1312 })
+        {
+            // Service/CI tokens may have no Credential Manager logon session.
+            // This is an explicit capability skip, not a passed vault check.
+            vaultAvailable = false;
+            Console.WriteLine("SKIP: native credential-vault checks unavailable (Win32 1312); rerun under an interactive user token.");
+        }
+        finally { Credential("RemoveConnectionPassword", testHost); }
+        if (vaultAvailable)
+            Check(Credential("ReadConnectionPassword", testHost, "EXAMPLE\\Demo") == null,
+                "Synthetic credential must be removed after regression.");
+        Console.WriteLine($"PASS: {_checks} history/credential checks; unique synthetic credential removed, no real credentials modified.");
     }
 }

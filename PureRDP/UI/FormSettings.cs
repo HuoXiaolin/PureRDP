@@ -958,6 +958,24 @@ public partial class FormSettings : Form
             return false;
         }
 
+        // Persist an explicitly supplied secret; .rdp files intentionally do
+        // not contain it. Otherwise only this first in-memory connection works.
+        if (connectionSettings.Password != null && !string.IsNullOrWhiteSpace(connectionSettings.Username))
+        {
+            try
+            {
+                RdpCredentialService.SaveConnectionPassword(connectionSettings.Hostname!,
+                    connectionSettings.Username.CombineUsernameAndDomain(connectionSettings.Domain)!,
+                    connectionSettings.Password);
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                MessageBox.Show(this, "设备配置已保存，但密码未能写入 Windows 凭据管理器。请检查凭据存储权限后重试。",
+                    "凭据保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+
         // RDP credentials are keyed by TERMSRV/host. Keep an existing saved
         // password, but make its username follow the profile being saved;
         // otherwise the native client can silently reuse the old account.
@@ -1125,7 +1143,13 @@ public partial class FormSettings : Form
     private void lbCredentialSave_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
     {
         var password = string.IsNullOrWhiteSpace(tbPassword.Text) ? UpdatedSettings.Connection.Password : tbPassword.Text;
-        RdpCredentialService.SaveCredentials(cmbHostname.Text, cmbUsername.Text, password);
+        try { RdpCredentialService.SaveCredentials(cmbHostname.Text, cmbUsername.Text, password); }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(this, "Windows 凭据保存失败，请检查凭据存储权限后重试。", "保存失败",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         UpdateSavedCredentialHints(refreshCredentials: true);
     }
 

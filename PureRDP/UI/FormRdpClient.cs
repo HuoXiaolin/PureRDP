@@ -20,7 +20,7 @@ namespace PureRDP.UI;
 
 public partial class FormRdpClient : Form
 {
-    private const int ResizeGripSize = 8;
+    internal const int ResizeGripSize = 5;
     private const int MaxAutomaticReconnectAttempts = 10;
     private RdpClientService _rdpService;
     private readonly bool _isSessionWindow;
@@ -799,7 +799,7 @@ public partial class FormRdpClient : Form
         _glassChromeStrip.ToggleFullScreenRequested += (_, _) => ToggleFullScreen();
         _glassChromeStrip.ExpandedChanged += (_, _) => PositionWindowChrome();
         _glassChromeStrip.Owner = this;
-        _cornerGrips = new[] { Interop.HTTOPLEFT, Interop.HTBOTTOMLEFT, Interop.HTBOTTOMRIGHT }
+        _cornerGrips = new[] { Interop.HTBOTTOMLEFT, Interop.HTBOTTOMRIGHT }
             .Select(hit => new GlassWindowControlStrip(hit) { Owner = this }).ToArray();
         LocationChanged += (_, _) => PositionWindowChrome();
 
@@ -843,7 +843,11 @@ public partial class FormRdpClient : Form
         if (_previewOnly)
             return;
         if (enabled)
+        {
             ApplyRemoteWindowChrome();
+            if (WindowState == FormWindowState.Normal && !IsGridLayoutActive)
+                TryRestoreManualWindowBounds();
+        }
         else
             ApplyNativeWindowChrome();
     }
@@ -923,8 +927,8 @@ public partial class FormRdpClient : Form
         };
         _glassChromeStrip.Location = PointToScreen(new Point(stripX, stripY));
         if (Form.ActiveForm == this) _glassChromeStrip.BringToFront();
-        var corners = new[] { Point.Empty,
-            new Point(0, ClientSize.Height - 16), new Point(ClientSize.Width - 16, ClientSize.Height - 16) };
+        var corners = new[] { new Point(0, ClientSize.Height - ResizeGripSize),
+            new Point(ClientSize.Width - ResizeGripSize, ClientSize.Height - ResizeGripSize) };
         for (var i = 0; i < _cornerGrips.Length; i++)
         {
             var grip = _cornerGrips[i];
@@ -939,6 +943,102 @@ public partial class FormRdpClient : Form
     internal bool IsRemoteWindowResizable
         => _remoteChromeActive && !_rdpService.FullScreen && WindowState != FormWindowState.Minimized;
 
+    private bool _windowMovePending, _windowMoveActive;
+    private Point _windowMoveOrigin;
+    private Rectangle _windowMoveStartBounds;
+    private System.Windows.Forms.Timer? _windowMoveTimer;
+    internal bool IsRemoteWindowMovable => _isSessionWindow && !_previewOnly &&
+        _remoteChromeActive && !_rdpService.FullScreen && !_fullScreenTransitionInProgress &&
+        !_sessionClosing && !IsDisposed && !Disposing && IsHandleCreated && WindowState != FormWindowState.Minimized;
+
+    internal bool BeginRemoteWindowMove(Point origin)
+    {
+        if (!IsRemoteWindowMovable) return false;
+        EndRemoteWindowMove();
+        EndRemoteWindowResize();
+        Activate();
+        _windowMoveOrigin = origin;
+        _windowMoveStartBounds = Bounds;
+        _windowMovePending = true;
+        _windowMoveTimer ??= CreateWindowMoveTimer();
+        WindowChromeInterop.SetCapture(Handle);
+        _windowMoveTimer.Start();
+        return true;
+    }
+
+    private System.Windows.Forms.Timer CreateWindowMoveTimer()
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 16 };
+        timer.Tick += (_, _) =>
+        {
+            if (!IsRemoteWindowMovable || (Control.MouseButtons & MouseButtons.Left) == 0)
+                EndRemoteWindowMove();
+            else UpdateRemoteWindowMove(Cursor.Position);
+        };
+        return timer;
+    }
+
+    internal void UpdateRemoteWindowMove(Point cursor)
+    {
+        if ((!_windowMovePending && !_windowMoveActive) || !IsRemoteWindowMovable) return;
+        if (_windowMovePending)
+        {
+            var threshold = SystemInformation.DragSize;
+            if (new Rectangle(_windowMoveOrigin.X - threshold.Width / 2,
+                _windowMoveOrigin.Y - threshold.Height / 2, threshold.Width, threshold.Height).Contains(cursor)) return;
+            _windowMovePending = false;
+            _windowMoveActive = true;
+            if (WindowState == FormWindowState.Maximized)
+            {
+                var restore = RestoreBounds;
+                var work = Screen.FromControl(this).WorkingArea;
+                if (restore.Width < 320 || restore.Height < 240 || restore.Size == Bounds.Size)
+                    restore.Size = new Size(Math.Max(320, work.Width * 3 / 4), Math.Max(240, work.Height * 3 / 4));
+                var anchor = Math.Clamp((_windowMoveOrigin.X - _windowMoveStartBounds.Left) /
+                    (double)Math.Max(1, _windowMoveStartBounds.Width), 0, 1);
+                var topOffset = Math.Clamp(_windowMoveOrigin.Y - _windowMoveStartBounds.Top, 8, 48);
+                WindowState = FormWindowState.Normal;
+                Bounds = new Rectangle(cursor.X - (int)(restore.Width * anchor), cursor.Y - topOffset,
+                    restore.Width, restore.Height);
+                _windowMoveOrigin = cursor;
+                _windowMoveStartBounds = Bounds;
+            }
+        }
+        // Move only this host, including when it is a member of the grid.
+        Location = new Point(_windowMoveStartBounds.Left + cursor.X - _windowMoveOrigin.X,
+            _windowMoveStartBounds.Top + cursor.Y - _windowMoveOrigin.Y);
+    }
+
+    internal void EndRemoteWindowMove()
+    {
+        _windowMoveTimer?.Stop();
+        var moving = _windowMovePending || _windowMoveActive;
+        var moved = _windowMoveActive;
+        _windowMovePending = _windowMoveActive = false;
+        if (moving && IsHandleCreated && WindowChromeInterop.GetCapture() == Handle)
+            WindowChromeInterop.ReleaseCapture();
+        if (moved) RememberManualWindowBounds();
+    }
+
+    internal bool TryHandleWindowMoveInput(ref Message message)
+    {
+        // In true fullscreen do not consume ANY chord or mouse event.
+        if (!IsRemoteWindowMovable) return false;
+        if (message.Msg is not (Interop.WM_LBUTTONDOWN or Interop.WM_LBUTTONUP or Interop.WM_MOUSEMOVE or
+            Interop.WM_NCLBUTTONDOWN or Interop.WM_NCLBUTTONUP or 0x0203)) return false;
+        var packed = message.LParam.ToInt64();
+        var point = new Point((short)(packed & 0xffff), (short)((packed >> 16) & 0xffff));
+        if (message.Msg is not (Interop.WM_NCLBUTTONDOWN or Interop.WM_NCLBUTTONUP) &&
+            !WindowChromeInterop.ClientToScreen(message.HWnd, ref point)) return false;
+        if (_windowMovePending || _windowMoveActive)
+        {
+            if (message.Msg is Interop.WM_LBUTTONUP or Interop.WM_NCLBUTTONUP) EndRemoteWindowMove();
+            else if (message.Msg == Interop.WM_MOUSEMOVE) UpdateRemoteWindowMove(point);
+            return true;
+        }
+        return false;
+    }
+
     internal bool IsToolbarDragPoint(Point screenPoint)
     {
         if (_glassChromeStrip is not { Visible: true } strip) return false;
@@ -950,9 +1050,7 @@ public partial class FormRdpClient : Form
         if (_glassChromeStrip is not { Visible: true } strip || strip.IsDisposed)
             return false;
 
-        // Include transparent padding in the overlay bounds. It should pass
-        // through to the remote surface, but it must not be misread as a
-        // resize edge when the toolbar is docked against that edge.
+        // Padding belongs to the toolbar, not to a native RDP resize edge.
         return strip.ClientRectangle.Contains(strip.PointToClient(screenPoint));
     }
 
@@ -1547,26 +1645,11 @@ public partial class FormRdpClient : Form
         var bounds = RectangleToScreen(ClientRectangle);
         var onLeft = screenPoint.X >= bounds.Left && screenPoint.X < bounds.Left + ResizeGripSize;
         var onRight = screenPoint.X < bounds.Right && screenPoint.X >= bounds.Right - ResizeGripSize;
-        var onTop = screenPoint.Y >= bounds.Top && screenPoint.Y < bounds.Top + ResizeGripSize;
         var onBottom = screenPoint.Y < bounds.Bottom && screenPoint.Y >= bounds.Bottom - ResizeGripSize;
-
-        if (onTop && onLeft)
-            return Interop.HTTOPLEFT;
-        if (onTop && onRight)
-            return Interop.HTTOPRIGHT;
         if (onBottom && onLeft)
             return Interop.HTBOTTOMLEFT;
         if (onBottom && onRight)
             return Interop.HTBOTTOMRIGHT;
-        if (onLeft)
-            return Interop.HTLEFT;
-        if (onRight)
-            return Interop.HTRIGHT;
-        if (onTop)
-            return Interop.HTTOP;
-        if (onBottom)
-            return Interop.HTBOTTOM;
-
         return Interop.HTCLIENT;
     }
 
@@ -1581,11 +1664,15 @@ public partial class FormRdpClient : Form
 
     internal void BeginRemoteWindowResize(int hitTest, Point? dragOrigin = null)
     {
-        if (!IsRemoteWindowResizable || hitTest is Interop.HTCLIENT or Interop.HTTOPRIGHT)
+        if (!IsRemoteWindowResizable || hitTest is not (Interop.HTBOTTOMLEFT or Interop.HTBOTTOMRIGHT))
             return;
         var startCursor = dragOrigin ?? Cursor.Position;
         if (IsToolbarArea(startCursor))
             return;
+        EndRemoteWindowMove();
+        // A no-activate grip can be clicked while another application is
+        // foreground. Establish the host before taking drag capture.
+        Activate();
         if (_manualResizeHitTest != Interop.HTCLIENT || _pendingResizeHitTest != Interop.HTCLIENT)
             EndRemoteWindowResize();
         _pendingResizeHitTest = hitTest;
@@ -1610,11 +1697,30 @@ public partial class FormRdpClient : Form
         // path; a click without movement is then immediately harmless.
         if (IsHandleCreated)
             WindowChromeInterop.SetCapture(Handle);
-        if (dragOrigin.HasValue) UpdateManualResize(Cursor.Position);
+        // Wait for actual movement. A native grip supplies the exact down
+        // position; comparing it to a stale Cursor.Position here can start
+        // and cancel a gesture before its first mouse-move arrives.
     }
 
     private int _pendingResizeHitTest = Interop.HTCLIENT;
     private System.Windows.Forms.Timer? _resizeGestureTimer;
+
+    internal bool TryHandleWindowResizeInput(ref Message message)
+    {
+        if (!IsRemoteWindowResizable ||
+            (_pendingResizeHitTest == Interop.HTCLIENT && _manualResizeHitTest == Interop.HTCLIENT) ||
+            message.Msg is not (Interop.WM_MOUSEMOVE or Interop.WM_LBUTTONUP or Interop.WM_NCLBUTTONUP))
+            return false;
+        var point = ScreenPointFromMessage(message);
+        if (message.Msg != Interop.WM_NCLBUTTONUP &&
+            !WindowChromeInterop.ClientToScreen(message.HWnd, ref point)) return false;
+        // Use the captured message, not a later global cursor sample. The
+        // same entry handles the form, AxHost and nested ActiveX HWNDs.
+        UpdateManualResize(point);
+        if (message.Msg is Interop.WM_LBUTTONUP or Interop.WM_NCLBUTTONUP)
+            EndRemoteWindowResize();
+        return true;
+    }
 
     private void UpdateManualResize(Point cursor)
     {
@@ -1649,45 +1755,10 @@ public partial class FormRdpClient : Form
         var fromRight = _manualResizeHitTest is Interop.HTRIGHT or Interop.HTTOPRIGHT or Interop.HTBOTTOMRIGHT;
         var fromTop = _manualResizeHitTest is Interop.HTTOP or Interop.HTTOPLEFT or Interop.HTTOPRIGHT;
         var fromBottom = _manualResizeHitTest is Interop.HTBOTTOM or Interop.HTBOTTOMLEFT or Interop.HTBOTTOMRIGHT;
-        var horizontal = fromLeft || fromRight;
-        var vertical = fromTop || fromBottom;
-        var aspect = GetRemoteWindowAspectRatio();
-
-        var proposedWidth = fromLeft ? bounds.Width - deltaX : bounds.Width + deltaX;
-        var proposedHeight = fromTop ? bounds.Height - deltaY : bounds.Height + deltaY;
-        double width;
-        double height;
-        if (!horizontal)
-        {
-            height = proposedHeight;
-            width = height * aspect;
-        }
-        else if (!vertical)
-        {
-            width = proposedWidth;
-            height = width / aspect;
-        }
-        else if (Math.Abs(proposedWidth - bounds.Width) / (double)bounds.Width >=
-                 Math.Abs(proposedHeight - bounds.Height) / (double)bounds.Height)
-        {
-            width = proposedWidth;
-            height = width / aspect;
-        }
-        else
-        {
-            height = proposedHeight;
-            width = height * aspect;
-        }
-
-        width = Math.Max(minimumWidth, width);
-        height = Math.Max(minimumHeight, height);
-        if (height < width / aspect)
-            height = width / aspect;
-        else
-            width = height * aspect;
-
-        var newWidth = Math.Max(minimumWidth, (int)Math.Round(width));
-        var newHeight = Math.Max(minimumHeight, (int)Math.Round(height));
+        // Independent axes: horizontal-only movement must not alter height,
+        // and vertical-only movement must not alter width.
+        var newWidth = Math.Max(minimumWidth, fromLeft ? bounds.Width - deltaX : fromRight ? bounds.Width + deltaX : bounds.Width);
+        var newHeight = Math.Max(minimumHeight, fromTop ? bounds.Height - deltaY : fromBottom ? bounds.Height + deltaY : bounds.Height);
         var newLeft = fromLeft ? bounds.Right - newWidth : bounds.Left;
         var newTop = fromTop ? bounds.Bottom - newHeight : bounds.Top;
         bounds = new Rectangle(newLeft, newTop, newWidth, newHeight);
@@ -1697,22 +1768,6 @@ public partial class FormRdpClient : Form
         // ends. Keep the local ActiveX viewport in sync during the drag so the
         // old-size surface cannot leave a background frame around the picture.
         _rdpService.RefreshPictureLayout();
-    }
-
-    private double GetRemoteWindowAspectRatio()
-    {
-        var desktop = _rdpService.PictureDesktopSize;
-        if (desktop.Width > 0 && desktop.Height > 0)
-            return (double)desktop.Width / desktop.Height;
-
-        var width = _appSettings.Connection.Width;
-        var height = _appSettings.Connection.Height;
-        if (width is > 0 && height is > 0)
-            return (double)width.Value / height.Value;
-
-        return _manualResizeStartBounds.Height > 0
-            ? (double)_manualResizeStartBounds.Width / _manualResizeStartBounds.Height
-            : 16.0 / 9.0;
     }
 
     internal void EndRemoteWindowResize()
@@ -1731,6 +1786,7 @@ public partial class FormRdpClient : Form
             WindowChromeInterop.ReleaseCapture();
         if (wasResizing)
         {
+            RememberManualWindowBounds();
             _rdpService.SetInteractiveResize(false);
             QueueRemoteResize();
         }
@@ -2378,6 +2434,11 @@ public partial class FormRdpClient : Form
     {
         var hostname = _appSettings.Connection.Hostname;
         var persistedSettings = WindowPersistenceService.Load(_isSessionWindow ? hostname : null);
+        ApplyPersistedWindowSettings(persistedSettings);
+    }
+
+    private void ApplyPersistedWindowSettings(WindowSettings? persistedSettings)
+    {
         _appSettings.Window.MergeFrom(persistedSettings);
         this.ApplyWindowSettings(_appSettings.Window);
         if (!_isSessionWindow) EnsureConsoleOnScreen();
@@ -2386,6 +2447,9 @@ public partial class FormRdpClient : Form
         _reconnectFullScreen = _restoreFullScreenOnConnect;
         _reconnectFullScreenMultiMonitor = _fullScreenMultiMonitor;
 
+        _applyConnectionWindowSizeAfterConnect = false;
+        if (_isSessionWindow && TryRestoreManualWindowBounds())
+            return;
         if (_isSessionWindow && ShouldAutoMaximizeWindow)
         {
             // WindowState.Maximized uses the monitor working area, so the
@@ -2395,9 +2459,8 @@ public partial class FormRdpClient : Form
         }
         else if (_isSessionWindow && HasConnectionWindowSize)
         {
-            // An explicit size in the connection profile is authoritative for
-            // the next session. A remembered window size is only the fallback
-            // when the profile leaves width/height unset.
+            // Profile dimensions initialize windows that have not yet been
+            // manually moved/resized. Explicit user geometry takes priority.
             _applyConnectionWindowSizeAfterConnect = true;
             ApplyConnectionWindowSize();
         }
@@ -2418,6 +2481,7 @@ public partial class FormRdpClient : Form
 
     private void ApplyConnectionWindowSize(bool forceNormal = false)
     {
+        if (TryRestoreManualWindowBounds()) return;
         if (!forceNormal && !HasConnectionWindowSize)
             return;
 
@@ -2444,7 +2508,46 @@ public partial class FormRdpClient : Form
         Text = title;
     }
 
-    private void SaveWindowSettings()
+    private void RememberManualWindowBounds()
+    {
+        if (!_isSessionWindow || _previewOnly || _rdpService.FullScreen ||
+            WindowState != FormWindowState.Normal || Bounds.Width < 320 || Bounds.Height < 240)
+            return;
+        var settings = _appSettings.Window;
+        settings.ManualWindowX = Left;
+        settings.ManualWindowY = Top;
+        settings.ManualWindowWidth = Width;
+        settings.ManualWindowHeight = Height;
+        _applyConnectionWindowSizeAfterConnect = false;
+        if (_independentBounds.HasValue)
+        {
+            _independentBounds = Bounds;
+            _independentState = FormWindowState.Normal;
+            _independentFullScreen = false;
+        }
+    }
+
+    private bool TryRestoreManualWindowBounds()
+    {
+        var settings = _appSettings.Window;
+        if (!_isSessionWindow || _previewOnly || _rdpService.FullScreen || settings.ManualWindowX is not int x || settings.ManualWindowY is not int y ||
+            settings.ManualWindowWidth is not >= 320 || settings.ManualWindowHeight is not >= 240)
+            return false;
+        var bounds = new Rectangle(x, y, settings.ManualWindowWidth.Value, settings.ManualWindowHeight.Value);
+        // A disconnected monitor must not make the remembered window
+        // unreachable. Keep the original geometry when it still fits.
+        var screen = Screen.AllScreens.FirstOrDefault(item => item.WorkingArea.IntersectsWith(bounds))
+            ?? Screen.FromControl(_managementWindow ?? this);
+        var work = screen.WorkingArea;
+        bounds.Size = new Size(Math.Min(bounds.Width, work.Width), Math.Min(bounds.Height, work.Height));
+        bounds.Location = new Point(Math.Clamp(bounds.X, work.Left, work.Right - bounds.Width),
+            Math.Clamp(bounds.Y, work.Top, work.Bottom - bounds.Height));
+        WindowState = FormWindowState.Normal;
+        Bounds = bounds;
+        return true;
+    }
+
+    private WindowSettings CaptureWindowSettings()
     {
         var windowSettings = this.GetWindowSettings();
         if (_rdpService.FullScreen && _nonFullScreenBounds.Width > 0 && _nonFullScreenBounds.Height > 0)
@@ -2466,8 +2569,17 @@ public partial class FormRdpClient : Form
             windowSettings.Maximized = _independentState == FormWindowState.Maximized;
             windowSettings.FullScreen = _independentFullScreen;
         }
+        windowSettings.ManualWindowX = _appSettings.Window.ManualWindowX;
+        windowSettings.ManualWindowY = _appSettings.Window.ManualWindowY;
+        windowSettings.ManualWindowWidth = _appSettings.Window.ManualWindowWidth;
+        windowSettings.ManualWindowHeight = _appSettings.Window.ManualWindowHeight;
+        return windowSettings;
+    }
+
+    private void SaveWindowSettings()
+    {
         var hostname = _isSessionWindow ? _appSettings.Connection.Hostname : null;
-        windowSettings.Save(hostname);
+        CaptureWindowSettings().Save(hostname);
     }
 
     private void SetZoomLevel(uint zoomPercent)
@@ -2489,6 +2601,7 @@ public partial class FormRdpClient : Form
     {
         if (_sessionClosing || Disposing || IsDisposed)
             return;
+        if (isFullScreen) EndRemoteWindowMove();
         ResumeDisplayAfterExternalRestore();
         if (isFullScreen && IsGridLayoutActive)
         {
@@ -2654,6 +2767,11 @@ public partial class FormRdpClient : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if ((_windowMovePending || _windowMoveActive) && keyData == Keys.Escape)
+        {
+            EndRemoteWindowMove();
+            return true;
+        }
         var escapeKeyPressed = keyData == Keys.Escape;
         var connectionActive = _rdpService.IsConnected;
         if (!escapeKeyPressed || connectionActive)
@@ -2685,6 +2803,10 @@ public partial class FormRdpClient : Form
 
     protected override void WndProc(ref Message m)
     {
+        if (TryHandleWindowMoveInput(ref m)) return;
+        if (TryHandleWindowResizeInput(ref m)) return;
+        if (m.Msg is 0x0215 or Interop.WM_CANCELMODE && (_windowMovePending || _windowMoveActive))
+            EndRemoteWindowMove();
         if (!_isSessionWindow && _autoTileSessions && IsHandleCreated &&
             !_sessionClosing && m.Msg is 0x007E or 0x001A) // display/work-area change
         {
@@ -2729,20 +2851,6 @@ public partial class FormRdpClient : Form
         if (m.Msg == 0x0231) _rdpService?.SetInteractiveResize(true); // WM_ENTERSIZEMOVE
         if (m.Msg == 0x0232) _rdpService?.SetInteractiveResize(false); // WM_EXITSIZEMOVE
 
-        if (m.Msg == Interop.WM_MOUSEMOVE && (_manualResizeHitTest != Interop.HTCLIENT || _pendingResizeHitTest != Interop.HTCLIENT))
-        {
-            UpdateManualResize(Cursor.Position);
-            return;
-        }
-
-        if (m.Msg is Interop.WM_LBUTTONUP or Interop.WM_NCLBUTTONUP &&
-            (_manualResizeHitTest != Interop.HTCLIENT || _pendingResizeHitTest != Interop.HTCLIENT))
-        {
-            if (_manualResizeHitTest != Interop.HTCLIENT) UpdateManualResize(Cursor.Position);
-            EndRemoteWindowResize();
-            return;
-        }
-
         var shiftDown = ModifierKeys.HasFlag(Keys.Shift);
         var isFullScreen = _appSettings.Connection.ScreenMode == ScreenMode.FullScreen;
         var useAllMonitors = _appSettings.Connection.UseAllMonitors == true;
@@ -2752,13 +2860,10 @@ public partial class FormRdpClient : Form
         {
             case Interop.WM_NCHITTEST when IsBorderlessWindowed:
             {
-                var hitTest = GetBorderlessWindowHitTest(ScreenPointFromMessage(m));
-                if (hitTest != Interop.HTCLIENT)
-                {
-                    m.Result = (IntPtr)hitTest;
-                    return;
-                }
-                break;
+                // Edge input is handled by RemoteResizeInputFilter. Never
+                // enter DefWindowProc's modal sizing loop at the same time.
+                m.Result = (IntPtr)Interop.HTCLIENT;
+                return;
             }
 
             case Interop.WM_SYSCOMMAND:
@@ -2849,7 +2954,7 @@ public partial class FormRdpClient : Form
             return Interop.HTRIGHT;
         if (onTop)
         {
-            return Interop.HTCAPTION;
+            return Interop.HTTOP;
         }
         if (onBottom)
             return Interop.HTBOTTOM;
@@ -2892,6 +2997,7 @@ public partial class FormRdpClient : Form
             _globalShortcutFilter?.Dispose();
             _resizeInputFilter?.Dispose();
             _resizeGestureTimer?.Dispose();
+            _windowMoveTimer?.Dispose();
             if (_trayIcon != null)
             {
                 _trayIcon.Visible = false;
@@ -3172,7 +3278,7 @@ public partial class FormRdpClient : Form
         if (_adoptedPreviewSession)
         {
             LoadAndApplyWindowSettings();
-            if (_isSessionWindow && WindowState == FormWindowState.Normal)
+            if (_isSessionWindow && WindowState == FormWindowState.Normal && _appSettings.Window.ManualWindowX == null)
                 Location = Screen.FromControl(_managementWindow ?? this).WorkingArea.Location;
             UpdateWindowTitle();
             SetRemoteConnectionChrome(true);
@@ -3216,7 +3322,7 @@ public partial class FormRdpClient : Form
             return;
         }
         LoadAndApplyWindowSettings();
-        if (_isSessionWindow && WindowState == FormWindowState.Normal)
+        if (_isSessionWindow && WindowState == FormWindowState.Normal && _appSettings.Window.ManualWindowX == null)
             Location = Screen.FromControl(_managementWindow ?? this).WorkingArea.Location;
         UpdateWindowTitle();
         if (_isSessionWindow)

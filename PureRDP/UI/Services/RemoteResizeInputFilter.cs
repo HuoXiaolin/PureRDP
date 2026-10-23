@@ -14,6 +14,9 @@ internal sealed class RemoteResizeInputFilter(FormRdpClient form) : IMessageFilt
             (m.HWnd != form.Handle && !WindowChromeInterop.IsChild(form.Handle, m.HWnd)))
             return false;
 
+        if (form.TryHandleWindowMoveInput(ref m)) return true;
+        if (form.TryHandleWindowResizeInput(ref m)) return true;
+
         if (m.Msg != Interop.WM_LBUTTONDOWN && m.Msg != Interop.WM_NCLBUTTONDOWN &&
             m.Msg != Interop.WM_LBUTTONUP && m.Msg != Interop.WM_NCLBUTTONUP &&
             m.Msg != Interop.WM_MOUSEMOVE)
@@ -32,9 +35,8 @@ internal sealed class RemoteResizeInputFilter(FormRdpClient form) : IMessageFilt
         if (m.Msg is Interop.WM_LBUTTONUP or Interop.WM_NCLBUTTONUP)
         {
             form.EndRemoteWindowResize();
-            // Toolbar padding is click-through for client input, but an
-            // already queued non-client release must not complete a native
-            // edge gesture in a nested ActiveX window.
+            // A stale non-client release must not complete a native edge
+            // gesture in a nested ActiveX window under the toolbar.
             return m.Msg == Interop.WM_NCLBUTTONUP && form.IsToolbarArea(point);
         }
 
@@ -44,7 +46,7 @@ internal sealed class RemoteResizeInputFilter(FormRdpClient form) : IMessageFilt
             return false;
         if (form.IsToolbarArea(point))
         {
-            // Do not let nested native windows turn transparent toolbar
+            // Do not let nested native windows turn inert toolbar
             // padding into a non-client drag/capture gesture.
             if (m.Msg == Interop.WM_NCLBUTTONDOWN)
             {
@@ -73,7 +75,7 @@ internal sealed class RemoteResizeInputFilter(FormRdpClient form) : IMessageFilt
             return true;
         }
 
-        form.BeginRemoteWindowResize(hit);
+        form.BeginRemoteWindowResize(hit, point);
         return true;
     }
 

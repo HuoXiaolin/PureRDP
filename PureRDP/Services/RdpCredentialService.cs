@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.ComponentModel;
+using System.Security.Cryptography;
 
 namespace PureRDP.Services;
 
@@ -14,6 +16,39 @@ internal static class RdpCredentialService
 {
     private const string TERMSRV_PREFIX = "TERMSRV/";
 
+    // Private, endpoint-specific entries do not overwrite mstsc/other clients'
+    // host-wide credentials. Secrets never enter an RDP file or diagnostic log.
+    private static string PrivateTarget(string hostname)
+        => "PureRDP/TERMSRV/" + hostname.Trim().ToLowerInvariant();
+
+    internal static void SaveConnectionPassword(string hostname, string userName, string password)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostname);
+        ArgumentException.ThrowIfNullOrWhiteSpace(userName);
+        WriteCredential(PrivateTarget(hostname), userName, password, Interop.CredentialType.Generic);
+    }
+
+    internal static string? ReadConnectionPassword(string? hostname, string? userName)
+    {
+        if (string.IsNullOrWhiteSpace(hostname) || string.IsNullOrWhiteSpace(userName)) return null;
+        IntPtr pointer = IntPtr.Zero;
+        try
+        {
+            if (!Interop.CredRead(PrivateTarget(hostname), Interop.CredentialType.Generic, 0, out pointer) || pointer == IntPtr.Zero)
+                return null;
+            var credential = Marshal.PtrToStructure<Interop.CREDENTIAL>(pointer);
+            var savedUser = Marshal.PtrToStringUni(credential.UserName);
+            if (!string.Equals(savedUser, userName, StringComparison.OrdinalIgnoreCase) ||
+                credential.CredentialBlob == IntPtr.Zero || credential.CredentialBlobSize % 2 != 0 ||
+                credential.CredentialBlobSize > 2560) return null;
+            return Marshal.PtrToStringUni(credential.CredentialBlob, checked((int)credential.CredentialBlobSize / 2));
+        }
+        finally { if (pointer != IntPtr.Zero) Interop.CredFree(pointer); }
+    }
+
+    internal static void RemoveConnectionPassword(string hostname)
+        => Interop.CredDelete(PrivateTarget(hostname), Interop.CredentialType.Generic, 0);
+
     /// <summary>
     /// Checks if saved credentials exist for an RDP connection
     /// </summary>
@@ -21,7 +56,10 @@ internal static class RdpCredentialService
     /// <returns>The saved username if credentials exist, null otherwise</returns>
     public static string? CredentialsExist(string? hostname)
     {
-        foreach (var (credentialTarget, credentialType) in GetCredentialReferences(hostname))
+        var references = GetCredentialReferences(hostname);
+        if (!string.IsNullOrWhiteSpace(hostname))
+            references = references.Prepend((PrivateTarget(hostname), Interop.CredentialType.Generic));
+        foreach (var (credentialTarget, credentialType) in references)
         {
             IntPtr credentialPtr = IntPtr.Zero;
             try
@@ -61,7 +99,13 @@ internal static class RdpCredentialService
         ArgumentException.ThrowIfNullOrWhiteSpace(hostname);
         ArgumentException.ThrowIfNullOrWhiteSpace(userName);
 
-        var credentialTarget = GetCredentialTarget(hostname);
+        WriteCredential(GetCredentialTarget(hostname), userName, password, Interop.CredentialType.DomainPassword);
+        if (password != null) SaveConnectionPassword(hostname, userName, password);
+    }
+
+    private static void WriteCredential(string credentialTarget, string userName, string? password,
+        Interop.CredentialType type)
+    {
         var passwordBytes = Encoding.Unicode.GetBytes(password ?? string.Empty);
         var targetNamePtr = Marshal.StringToCoTaskMemUni(credentialTarget);
         var userNamePtr = Marshal.StringToCoTaskMemUni(userName);
@@ -71,7 +115,7 @@ internal static class RdpCredentialService
         var credential = new Interop.CREDENTIAL
         {
             Flags = 0,
-            Type = (int)Interop.CredentialType.DomainPassword,
+            Type = (int)type,
             TargetName = targetNamePtr,
             Comment = IntPtr.Zero,
             LastWritten = default,
@@ -89,10 +133,12 @@ internal static class RdpCredentialService
         {
             credentialPtr = Marshal.AllocCoTaskMem(Marshal.SizeOf(typeof(Interop.CREDENTIAL)));
             Marshal.StructureToPtr(credential, credentialPtr, false);
-            Interop.CredWrite(credentialPtr, 0);
+            if (!Interop.CredWrite(credentialPtr, 0))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法保存远程桌面凭据。");
         }
         finally
         {
+            CryptographicOperations.ZeroMemory(passwordBytes);
             if (credentialPtr != IntPtr.Zero)
                 Marshal.FreeCoTaskMem(credentialPtr);
             if (targetNamePtr != IntPtr.Zero)
@@ -100,7 +146,10 @@ internal static class RdpCredentialService
             if (userNamePtr != IntPtr.Zero)
                 Marshal.FreeCoTaskMem(userNamePtr);
             if (credentialBlobPtr != IntPtr.Zero)
+            {
+                Marshal.Copy(passwordBytes, 0, credentialBlobPtr, passwordBytes.Length);
                 Marshal.FreeCoTaskMem(credentialBlobPtr);
+            }
         }
     }
 
@@ -125,16 +174,7 @@ internal static class RdpCredentialService
         {
             var updated = TryUpdateSavedUsername(credentialTarget, credentialType, userName,
                 out var credentialWasFound);
-            if (credentialWasFound && !updated)
-            {
-                // If Credential Manager rejects the in-place update, do not
-                // leave an older identity that the native RDP provider can
-                // silently reuse. The explicit profile username will then be
-                // used for the next logon prompt.
-                try { Interop.CredDelete(credentialTarget, credentialType, 0); }
-                catch (Exception exception) when (exception is not OutOfMemoryException) { }
-                updated = true;
-            }
+            // A failed update must not destroy a previously saved secret.
             foundCredential |= credentialWasFound;
             updatedAllCredentials &= updated;
         }
@@ -222,6 +262,7 @@ internal static class RdpCredentialService
     /// <returns>True if credentials were removed successfully, false otherwise</returns>
     public static void RemoveCredentials(string? hostname)
     {
+        if (!string.IsNullOrWhiteSpace(hostname)) RemoveConnectionPassword(hostname);
         foreach (var (credentialTarget, credentialType) in GetCredentialReferences(hostname))
         {
             try { Interop.CredDelete(credentialTarget, credentialType, 0); }

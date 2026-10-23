@@ -27,6 +27,13 @@ internal class WindowSettings
     /// </summary>
     public int? WindowHeight { get; set; }
 
+    // Kept separately so automatic grid/fullscreen geometry cannot overwrite
+    // the last size and position explicitly chosen by the user.
+    public int? ManualWindowX { get; set; }
+    public int? ManualWindowY { get; set; }
+    public int? ManualWindowWidth { get; set; }
+    public int? ManualWindowHeight { get; set; }
+
     /// <summary>
     /// Start the window maximized
     /// </summary>

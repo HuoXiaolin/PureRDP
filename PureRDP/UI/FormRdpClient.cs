@@ -73,6 +73,8 @@ public partial class FormRdpClient : Form
     private NotifyIcon? _trayIcon;
     private ContextMenuStrip? _trayMenu;
     private bool _allowApplicationExit;
+    private bool _suppressInitialConsoleVisibility;
+    private readonly bool _startedSilently;
     private bool _fullScreenMultiMonitor;
     private bool _restoreFullScreenOnConnect;
     private bool _adoptedPreviewSession;
@@ -145,6 +147,8 @@ public partial class FormRdpClient : Form
         Icon = Properties.Resources.AppIcon;
 
         _appSettings = CommandLineOptions.Parse(args);
+        _startedSilently = !_isSessionWindow && _appSettings.SilentStartup == true;
+        _suppressInitialConsoleVisibility = _startedSilently;
         if (!_isSessionWindow)
         {
             var globalSettings = GlobalSettingsService.Load();
@@ -253,13 +257,20 @@ public partial class FormRdpClient : Form
         if (_sessionClosing || IsDisposed)
             return;
 
-        ShowManagementWindow();
         if (args.Length == 0)
+        {
+            ShowManagementWindow();
             return;
+        }
 
         try
         {
-            _appSettings = CommandLineOptions.Parse(args);
+            var incomingSettings = CommandLineOptions.Parse(args);
+            // A second login/startup invocation must not wake an existing
+            // tray instance or replace its interactive connection settings.
+            if (incomingSettings.SilentStartup == true) return;
+            _appSettings = incomingSettings;
+            ShowManagementWindow();
             AutoStartup();
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -2765,6 +2776,22 @@ public partial class FormRdpClient : Form
         _formSystemMenuService.UpdateZoomCheckmarks(_appSettings.Connection.ScaleFactor);
     }
 
+    protected override void SetVisibleCore(bool value)
+    {
+        if (value && _suppressInitialConsoleVisibility)
+        {
+            // Application.Run normally shows its main Form. Suppress that
+            // first show before Windows sets WS_VISIBLE: hiding in Shown or
+            // BeginInvoke is already one painted frame too late. The HWND,
+            // tray icon and UI message loop remain alive for an explicit
+            // tray click or a normal second launch to open the console.
+            _suppressInitialConsoleVisibility = false;
+            base.SetVisibleCore(false);
+            return;
+        }
+        base.SetVisibleCore(value);
+    }
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if ((_windowMovePending || _windowMoveActive) && keyData == Keys.Escape)
@@ -3342,15 +3369,12 @@ public partial class FormRdpClient : Form
         }
         else
         {
-            if (_appSettings.SilentStartup == true)
-            {
-                // Keep the tray resident, with no console flash during login.
-                BeginInvoke(new Action(() =>
-                {
-                    if (!IsDisposed && !_sessionClosing) Hide();
-                }));
-            }
-            else
+            // A silent instance's first Shown happens only after the user
+            // explicitly opens the console. Never hide it again here.
+            // The first explicit open can carry new .rdp arguments, replacing
+            // SilentStartup in _appSettings before Shown is dispatched. That
+            // command already owns AutoStartup; do not run it a second time.
+            if (!_startedSilently && _appSettings.SilentStartup != true)
                 AutoStartup();
         }
     }

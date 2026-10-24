@@ -34,6 +34,7 @@ internal sealed class RdpClientService : IDisposable
     private bool _fullScreen;
     private readonly System.Windows.Forms.Timer _displayTimer = new() { Interval = 500 };
     private bool _loginComplete;
+    private bool _smartSizingCanUpscale;
     private bool _previewMode;
     private KeyboardMode _keyboardHookMode = KeyboardMode.OnLocalComputer;
     private bool _keyboardHookModeApplied;
@@ -225,8 +226,8 @@ internal sealed class RdpClientService : IDisposable
         if (_rdpControl == null || _rdpClient == null || _previewMode || _displayUpdatesSuspended)
             return;
 
-        var width = _rdpClient.DesktopWidth > 0 ? _rdpClient.DesktopWidth : _viewDesktop.Width;
-        var height = _rdpClient.DesktopHeight > 0 ? _rdpClient.DesktopHeight : _viewDesktop.Height;
+        var width = _viewDesktop.Width > 0 ? _viewDesktop.Width : _rdpClient.DesktopWidth;
+        var height = _viewDesktop.Height > 0 ? _viewDesktop.Height : _rdpClient.DesktopHeight;
         if (width > 0 && height > 0)
             LayoutPicture((uint)width, (uint)height);
     }
@@ -261,7 +262,7 @@ internal sealed class RdpClientService : IDisposable
             return;
         }
 
-        if (refreshOnResume && _loginComplete && !_previewMode)
+        if (refreshOnResume && !_previewMode)
             ResizeSessionToContainer();
     }
 
@@ -322,6 +323,10 @@ internal sealed class RdpClientService : IDisposable
         var fitRatio = Math.Min((double)_container.ClientSize.Width / width,
             (double)_container.ClientSize.Height / height);
         var ratio = scale == 0 ? fitRatio : Math.Min(scale / 100.0, fitRatio);
+        // SmartSizing alone need not enlarge a smaller logon surface. On an
+        // older control without EnableZoom, cap the viewport instead of
+        // exposing a large native gray backing around the unchanged picture.
+        if (!_smartSizingCanUpscale) ratio = Math.Min(1.0, ratio);
         var size = new System.Drawing.Size(Math.Max(1, (int)Math.Floor(width * ratio)),
             Math.Max(1, (int)Math.Floor(height * ratio)));
         var bounds = new System.Drawing.Rectangle(0, 0, size.Width, size.Height);
@@ -499,7 +504,25 @@ internal sealed class RdpClientService : IDisposable
         var rdpClient = (MsRdpClient10NotSafeForScripting?)_rdpControl.GetOcx();
         _rdpClient = rdpClient ?? throw new InvalidOperationException("Failed to create RDP client control.");
         _rdpClient.AdvancedSettings9.ContainerHandledFullScreen = 1;
+        ConfigurePictureUpscaling();
         DisableNativeConnectionBar();
+    }
+
+    private void ConfigurePictureUpscaling()
+    {
+        _smartSizingCanUpscale = false;
+        try
+        {
+            // This write-only property must be set before connecting. It
+            // allows SmartSizing to enlarge the pre-login desktop as well as
+            // shrink it, without switching to mutually-exclusive ZoomLevel.
+            ((IMsRdpExtendedSettings)_rdpClient!).set_Property("EnableZoom", true);
+            _smartSizingCanUpscale = true;
+        }
+        catch (COMException exception)
+        {
+            ReportDisplay($"picture-upscale unavailable HRESULT=0x{exception.HResult:X8}; using native-size fallback");
+        }
     }
 
     private void RemoveRdpControlAndClient()
@@ -542,6 +565,7 @@ internal sealed class RdpClientService : IDisposable
         _rdpControl.OnConnected += OnConnected;
         _rdpControl.OnDisconnected += OnDisconnected;
         _rdpControl.OnLoginComplete += OnLoginComplete;
+        _rdpControl.OnRemoteDesktopSizeChange += OnRemoteDesktopSizeChange;
         _rdpControl.OnConfirmClose += OnConfirmClose;
         _rdpControl.OnRequestContainerMinimize += OnRequestContainerMinimize;
         _rdpControl.OnRequestLeaveFullScreen += OnRequestLeaveFullScreen;
@@ -555,6 +579,7 @@ internal sealed class RdpClientService : IDisposable
         _rdpControl.OnConnected -= OnConnected;
         _rdpControl.OnDisconnected -= OnDisconnected;
         _rdpControl.OnLoginComplete -= OnLoginComplete;
+        _rdpControl.OnRemoteDesktopSizeChange -= OnRemoteDesktopSizeChange;
         _rdpControl.OnConfirmClose -= OnConfirmClose;
         _rdpControl.OnRequestContainerMinimize -= OnRequestContainerMinimize;
         _rdpControl.OnRequestLeaveFullScreen -= OnRequestLeaveFullScreen;
@@ -617,19 +642,9 @@ internal sealed class RdpClientService : IDisposable
         // area size. Using an older profile resolution here makes the RDP
         // ActiveX control create its own horizontal and vertical scrollbars
         // before dynamic resolution has a chance to update the session.
-        var form = _container.FindForm();
-        var autoSizeToContainer = !_previewMode && _connectionSettings.ScreenMode != ScreenMode.FullScreen &&
-                                  _connectionSettings.UseAllMonitors != true &&
-                                  (_connectionSettings.AutoMaximizeWindow == true ||
-                                   _connectionSettings.AutoResize != false ||
-                                   form?.WindowState == FormWindowState.Maximized);
-        var fillWindow = !_tileMode && (form?.WindowState == FormWindowState.Maximized || _fullScreen || _connectionSettings.AutoMaximizeWindow == true);
-        var initialWidth = fillWindow || autoSizeToContainer && !_connectionSettings.Width.HasValue
-            ? GetRemoteDimension(_container.ClientSize.Width)
-            : GetRemoteDimension(_connectionSettings.Width ?? _container.ClientSize.Width);
-        var initialHeight = fillWindow || autoSizeToContainer && !_connectionSettings.Height.HasValue
-            ? GetRemoteDimension(_container.ClientSize.Height)
-            : GetRemoteDimension(_connectionSettings.Height ?? _container.ClientSize.Height);
+        var initialSize = GetInitialDesktopSize(_connectionSettings);
+        var initialWidth = (uint)initialSize.Width;
+        var initialHeight = (uint)initialSize.Height;
         if (initialWidth > 0)
             _rdpClient.DesktopWidth = (int)initialWidth;
         if (initialHeight > 0)
@@ -644,12 +659,9 @@ internal sealed class RdpClientService : IDisposable
         extendedSettings.set_Property(DESKTOP_SCALE_FACTOR_PROPERTY, Math.Max(100u, scaleFactor));
         extendedSettings.set_Property(DEVICE_SCALE_FACTOR_PROPERTY, DEVICE_SCALE_FACTOR);
 
-        if (_previewMode || _tileMode || _connectionSettings.Width.HasValue || _connectionSettings.Height.HasValue)
-            _rdpClient.AdvancedSettings9.SmartSizing = true;
-        else if (autoSizeToContainer)
-            _rdpClient.AdvancedSettings9.SmartSizing = false;
-        else if (_connectionSettings.SmartSizing != null)
-            _rdpClient.AdvancedSettings9.SmartSizing = _connectionSettings.SmartSizing.Value;
+        // Local fitting also applies before OnLoginComplete. Dynamic desktop
+        // updates and SmartSizing are complementary, not mutually exclusive.
+        _rdpClient.AdvancedSettings9.SmartSizing = true;
 
         ((IMsRdpClientNonScriptable5)_rdpClient).UseMultimon = _connectionSettings.UseAllMonitors == true;
         LayoutPicture(initialWidth, initialHeight);
@@ -821,6 +833,21 @@ internal sealed class RdpClientService : IDisposable
         }
     }
 
+    private System.Drawing.Size GetInitialDesktopSize(ConnectionSettings settings)
+    {
+        var form = _container.FindForm();
+        var fillWindow = !_tileMode && (form?.WindowState == FormWindowState.Maximized || _fullScreen || settings.AutoMaximizeWindow == true);
+        var autoSizeToContainer = !_previewMode && !_tileMode && settings.ScreenMode != ScreenMode.FullScreen &&
+            settings.UseAllMonitors != true && settings.ViewScaleFactor is null or 0 or 100 &&
+            (settings.AutoResize != false || settings.AutoMaximizeWindow == true || form?.WindowState == FormWindowState.Maximized);
+        // A saved desktopwidth/desktopheight must not override an explicitly
+        // dynamic window's initial logon size. Fixed zoom, tiles and previews
+        // retain their configured remote-desktop dimensions.
+        var width = fillWindow || autoSizeToContainer ? _container.ClientSize.Width : settings.Width ?? _container.ClientSize.Width;
+        var height = fillWindow || autoSizeToContainer ? _container.ClientSize.Height : settings.Height ?? _container.ClientSize.Height;
+        return new System.Drawing.Size((int)GetRemoteDimension(width), (int)GetRemoteDimension(height));
+    }
+
     private void UpdateSessionDisplaySettings(ConnectionSettings connectionSettings, bool forceContainerSize = false)
     {
         if (_previewMode) return;
@@ -832,6 +859,10 @@ internal sealed class RdpClientService : IDisposable
         Debug.Assert(_rdpClient is not null);
 
         _connectionSettings = connectionSettings.Clone();
+
+        // Connected and logged-on are different stages. Local sizing must
+        // already work while Winlogon is waiting for a manually typed password.
+        RefreshPictureLayout();
 
         var form = _container.FindForm();
         var disconnected = !_loginComplete || _rdpClient.Connected != 1;
@@ -922,10 +953,12 @@ internal sealed class RdpClientService : IDisposable
 
     private void ContainerSizeChanged(object? sender, EventArgs e)
     {
-        if (!_loginComplete || _previewMode || _displayUpdatesSuspended) return;
+        if (_previewMode || _displayUpdatesSuspended) return;
         RefreshPictureLayout();
         _displayTimer.Stop();
-        if (_interactiveResize) return;
+        // Do not reconnect or negotiate a new desktop while the user types
+        // credentials. OnLoginComplete queues the latest container size.
+        if (!_loginComplete || _interactiveResize) return;
         _displayAttempts = 0;
         _displayTarget = _container.ClientSize;
         _displayTimer.Start();
@@ -998,6 +1031,17 @@ internal sealed class RdpClientService : IDisposable
         _connectionQualityTimer.Start();
         _ = ProbeConnectionQualityAsync();
         Connected?.Invoke(this, EventArgs.Empty);
+        ContainerSizeChanged(this, EventArgs.Empty);
+    }
+
+    private void OnRemoteDesktopSizeChange(object? sender, IMsTscAxEvents_OnRemoteDesktopSizeChangeEvent e)
+    {
+        if (e.width <= 0 || e.height <= 0) return;
+        _viewDesktop = new System.Drawing.Size(e.width, e.height);
+        // The server can change the Winlogon surface before OnLoginComplete.
+        // Track its actual geometry instead of only the requested profile size.
+        if (!_displayUpdatesSuspended)
+            RefreshPictureLayout();
     }
 
     private void OnNetworkStatusChanged(object? sender, IMsTscAxEvents_OnNetworkStatusChangedEvent e)

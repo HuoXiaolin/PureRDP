@@ -19,7 +19,12 @@ internal static class Program
     private static object Call(object target, string name, params object[] args) => target.GetType().GetMethod(name, Members)!.Invoke(target, args)!;
     private static void Check(bool value, string message)
     {
-        if (!value) throw new InvalidOperationException(message);
+        if (!value)
+        {
+            Directory.CreateDirectory(Path.Combine("outputs", "ci-tests"));
+            File.WriteAllText(Path.Combine("outputs", "ci-tests", "window-assertion-failure.txt"), message);
+            throw new InvalidOperationException(message);
+        }
         _checks++;
     }
     private static void Pump()
@@ -35,6 +40,8 @@ internal static class Program
         // tray startup, shortcut registration or any remote network session.
         var shown = type.GetMethod("FormRdpClient_Shown", Members)!;
         window.Shown -= (EventHandler)shown.CreateDelegate(typeof(EventHandler), window);
+        var closing = type.GetMethod("FormRdpClient_FormClosing", Members)!;
+        window.FormClosing -= (FormClosingEventHandler)closing.CreateDelegate(typeof(FormClosingEventHandler), window);
         window.StartPosition = FormStartPosition.Manual;
         window.Location = new Point(SystemInformation.VirtualScreen.Right + 4096, 100);
         window.Size = new Size(800, 600);
@@ -45,6 +52,11 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+        var failureFile = Path.Combine("outputs", "ci-tests", "window-assertion-failure.txt");
+        if (File.Exists(failureFile)) File.Delete(failureFile);
+        TestSilentStartupVisibility();
+        TestPreLoginViewport();
         using var manager = Window(null);
         _ = manager.Handle;
         using var first = Window(manager);
@@ -340,6 +352,179 @@ internal static class Program
         Check(IsWindowVisible(first.Handle), "Restore redraw suspension removed visibility from the top-level window.");
         Call(first, "SetRestoreRedraw", true);
         Console.WriteLine($"PASS: {_checks} minimize/restore checks; real host HWNDs, no RDP login.");
+    }
+
+    private static void TestPreLoginViewport()
+    {
+        Console.WriteLine("Pre-login regression: creating isolated host.");
+        using var window = Window(null);
+        window.Show();
+        Call(window, "SetRemoteConnectionChrome", true);
+        window.ClientSize = new Size(800, 600);
+        var service = Field(window, "_rdpService");
+        var profile = Field(window, "_appSettings").GetType().GetProperty("Connection")!.GetValue(Field(window, "_appSettings"))!;
+        profile.GetType().GetProperty("AutoResize")!.SetValue(profile, true);
+        profile.GetType().GetProperty("ViewScaleFactor")!.SetValue(profile, (uint?)0);
+        profile.GetType().GetProperty("Password")!.SetValue(profile, null);
+        profile.GetType().GetProperty("Width")!.SetValue(profile, 1600);
+        profile.GetType().GetProperty("Height")!.SetValue(profile, 900);
+        service.GetType().GetField("_connectionSettings", Members)!.SetValue(service, profile);
+        Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(800, 600),
+            "Dynamic pre-login sizing must use the window even when the profile contains an older desktop resolution.");
+        profile.GetType().GetProperty("AutoResize")!.SetValue(profile, false);
+        Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(1600, 900), "Fixed-resolution profiles must retain their initial desktop size.");
+        profile.GetType().GetProperty("AutoResize")!.SetValue(profile, true);
+        profile.GetType().GetProperty("ViewScaleFactor")!.SetValue(profile, (uint?)150);
+        Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(1600, 900), "Fixed picture zoom must retain its remote desktop baseline.");
+        profile.GetType().GetProperty("ViewScaleFactor")!.SetValue(profile, (uint?)0);
+        foreach (var mode in new[] { "_tileMode", "_previewMode" })
+        {
+            service.GetType().GetField(mode, Members)!.SetValue(service, true);
+            Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(1600, 900), "Tiles and previews must retain their configured remote dimensions.");
+            service.GetType().GetField(mode, Members)!.SetValue(service, false);
+        }
+        // Instantiate the real ActiveX without ever calling Connect: this
+        // tests the pre-login HWND and scaling properties without credentials,
+        // a remote session, native authentication popups or network traffic.
+        Console.WriteLine("Pre-login regression: creating disconnected ActiveX.");
+        Call(service, "CreateRdpControlAndClient");
+        try
+        {
+        Console.WriteLine("Pre-login regression: configuring local desktop.");
+        var client = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
+        client.DesktopWidth = 800;
+        client.DesktopHeight = 600;
+        service.GetType().GetField("_viewDesktop", Members)!.SetValue(service, new Size(800, 600));
+        var viewport = (Control)Field(service, "_rdpControl");
+        var container = (Control)Field(service, "_container");
+        var canUpscale = (bool)Field(service, "_smartSizingCanUpscale");
+        Size Fitted(Size desktop)
+        {
+            var ratio = Math.Min((double)container.ClientSize.Width / desktop.Width, (double)container.ClientSize.Height / desktop.Height);
+            if (!canUpscale) ratio = Math.Min(1, ratio);
+            return new Size((int)Math.Floor(desktop.Width * ratio), (int)Math.Floor(desktop.Height * ratio));
+        }
+        Call(service, "RefreshPictureLayout");
+        Console.WriteLine("Pre-login regression: resizing local viewport.");
+        Check(client.Connected == 0 && !(bool)Field(service, "_loginComplete"), "Pre-login regression must not connect or authenticate.");
+        window.ClientSize = new Size(400, 300);
+        Pump();
+        Check(viewport.Bounds == new Rectangle(Point.Empty, Fitted(new Size(800, 600))), "Container resizing must update the native viewport before login completes.");
+        window.ClientSize = new Size(1200, 900);
+        Pump();
+        var expectedSize = Fitted(new Size(800, 600));
+        Console.WriteLine($"Pre-login upscale: supported={canUpscale}; container={window.ClientSize}; viewport={viewport.Size}; expected={expectedSize}");
+        Check(viewport.Size == expectedSize, $"A larger logon viewport must enable native enlargement or use the safe native-size fallback: supported={canUpscale}, host={window.ClientSize}, container={((Control)Field(service, "_container")).ClientSize}, containerBounds={((Control)Field(service, "_container")).Bounds}, desktop={Field(service, "_viewDesktop")}, viewport={viewport.Size}, expected={expectedSize}.");
+        Check(client.AdvancedSettings9.SmartSizing, "Pre-login viewport fitting must keep SmartSizing enabled.");
+        var timer = (System.Windows.Forms.Timer)Field(service, "_displayTimer");
+        Check(!timer.Enabled, "Typing credentials must not start remote resolution/reconnect retries.");
+        Call(service, "SetInteractiveResize", true);
+        window.ClientSize = new Size(600, 450);
+        Pump();
+        Check(viewport.Size == Fitted(new Size(800, 600)) && !timer.Enabled, "Interactive pre-login resizing must update locally without negotiation.");
+        var pausedSize = viewport.Size;
+        Call(service, "SetInteractiveResize", false);
+        Call(service, "SetDisplayUpdatesSuspended", true, false);
+        window.ClientSize = new Size(400, 300);
+        Pump();
+        Check(viewport.Size == pausedSize, "Suspended display updates must not repaint an intermediate viewport.");
+        Call(service, "SetDisplayUpdatesSuspended", false, true);
+        Check(viewport.Size == Fitted(new Size(800, 600)), "Restoring a pre-login host must catch up its local viewport.");
+        Call(service, "OnRemoteDesktopSizeChange", null!, new AxMSTSCLib.IMsTscAxEvents_OnRemoteDesktopSizeChangeEvent(1024, 512));
+        Check((Size)Field(service, "_viewDesktop") == new Size(1024, 512) && viewport.Size == Fitted(new Size(1024, 512)),
+            "Server-reported logon dimensions must immediately replace stale profile aspect ratios.");
+        service.GetType().GetField("_loginComplete", Members)!.SetValue(service, true);
+        Call(service, "ContainerSizeChanged", null!, EventArgs.Empty);
+        Check(timer.Enabled, "After login, the latest client size must enter normal dynamic-resolution negotiation.");
+        timer.Stop();
+        service.GetType().GetField("_loginComplete", Members)!.SetValue(service, false);
+        Check(client.Connected == 0, "Viewport regressions must never establish or reconnect a real RDP session.");
+        Console.WriteLine($"Pre-login native viewport: EnableZoom={canUpscale}; Connected={client.Connected}; password unset.");
+        }
+        finally
+        {
+            // No Connect was issued. Do not call Disconnect in teardown for
+            // an ActiveX which was only initialized for a local sizing test.
+            Call(service, "RemoveRdpControlAndClient");
+        }
+    }
+
+    private static void TestSilentStartupVisibility()
+    {
+        // Use a session test host to avoid constructing the real console's
+        // tray/scanner or accessing saved connections. Exercise the exact
+        // production SetVisibleCore gate with a real native HWND.
+        using var silent = Window(null);
+        typeof(FormRdpClient).GetField("_suppressInitialConsoleVisibility", Members)!.SetValue(silent, true);
+        var settings = Field(silent, "_appSettings");
+        settings.GetType().GetProperty("SilentStartup")!.SetValue(settings, true);
+        var visibleFrames = 0;
+        var shownEvents = 0;
+        silent.VisibleChanged += (_, _) => { if (silent.Visible) visibleFrames++; };
+        silent.Shown += (_, _) => shownEvents++;
+        _ = silent.Handle;
+        Check(!IsWindowVisible(silent.Handle), "Creating the silent instance's HWND must not show it.");
+        Call(silent, "SetVisibleCore", true); // Application.Run's initial show
+        Pump();
+        Check(!silent.Visible && !IsWindowVisible(silent.Handle) && visibleFrames == 0 && shownEvents == 0,
+            "Silent startup must never become visible, even for one frame before a queued Hide.");
+        Check(!(bool)Field(silent, "_suppressInitialConsoleVisibility"), "Only the initial automatic show may be suppressed.");
+        for (var repeat = 0; repeat < 3; repeat++)
+            Call(silent, "HandleSingleInstanceCommand", new object[] { new[] { "--silent" } });
+        Pump();
+        Check(!silent.Visible && visibleFrames == 0, "Repeated silent launches must not wake the existing console.");
+        Check(ReferenceEquals(settings, Field(silent, "_appSettings")), "Silent relays must not replace interactive settings.");
+        Call(silent, "HandleSingleInstanceCommand", new object[] { Array.Empty<string>() });
+        Pump();
+        Check(silent.Visible && IsWindowVisible(silent.Handle) && shownEvents == 1,
+            "A normal second launch must still explicitly open the hidden console.");
+        Pump();
+        Check(silent.Visible, "An explicitly opened console must not be hidden by a delayed startup callback.");
+        silent.Hide();
+        Call(silent, "HandleSingleInstanceCommand", new object[] { new[] { "--silent-startup" } });
+        Check(!silent.Visible, "The silent-startup alias must also remain hidden.");
+        Call(silent, "ShowManagementWindow");
+        Pump();
+        Check(silent.Visible, "The tray's open-console path must still work after silent startup.");
+
+        // Also exercise the real framework startup path, not just a direct
+        // invocation of the visibility override.
+        Exception? failure = null;
+        var loopThread = new Thread(() =>
+        {
+            try
+            {
+                using var loopHost = Window(null);
+                typeof(FormRdpClient).GetField("_suppressInitialConsoleVisibility", Members)!.SetValue(loopHost, true);
+                var loopFrames = 0;
+                loopHost.VisibleChanged += (_, _) => { if (loopHost.Visible) loopFrames++; };
+                using var context = new ApplicationContext(loopHost);
+                using var timer = new System.Windows.Forms.Timer { Interval = 30 };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    try
+                    {
+                        Check(!loopHost.Visible && !IsWindowVisible(loopHost.Handle) && loopFrames == 0,
+                            "Actual Application.Run startup must keep the main HWND hidden with zero visible transitions.");
+                        Call(loopHost, "ShowManagementWindow");
+                        Check(loopHost.Visible && IsWindowVisible(loopHost.Handle) && loopFrames == 1,
+                            "Explicit opening must remain available while the hidden application's message loop runs.");
+                    }
+                    catch (Exception error) { failure = error; }
+                    finally { context.ExitThread(); }
+                };
+                timer.Start();
+                Application.Run(context);
+            }
+            catch (Exception error) { failure = error; }
+        }) { IsBackground = true };
+        // ExitThread cleans up all windows on its STA. Keep that lifecycle
+        // separate from the STA used by the remaining window regressions.
+        loopThread.SetApartmentState(ApartmentState.STA);
+        loopThread.Start();
+        if (!loopThread.Join(TimeSpan.FromSeconds(15))) throw new TimeoutException("Silent startup UI loop did not finish.");
+        if (failure != null) throw new InvalidOperationException("Silent Application.Run regression failed.", failure);
     }
 
     private static void TestFreeResizeAndMemory(FormRdpClient window, Control bottomLeft, Control bottomRight)

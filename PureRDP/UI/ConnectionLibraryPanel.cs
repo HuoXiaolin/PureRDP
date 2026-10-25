@@ -614,7 +614,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
         foreach (var card in _itemsPanel.Controls.OfType<ConnectionCardControl>())
         {
             var cellWidth = available / columns + (index++ % columns < available % columns ? 1 : 0);
-            card.Width = Math.Max(Px(_viewMode == ConnectionLibraryViewMode.List ? 1200 : 280), cellWidth - card.Margin.Horizontal);
+            card.Width = Math.Max(Px(_viewMode == ConnectionLibraryViewMode.List ? UiDesignTokens.ListCardMinimumWidth : 280), cellWidth - card.Margin.Horizontal);
         }
     }
 

@@ -267,6 +267,38 @@ internal static class Program
                     "Session state must not move the card action row: " + stableMode);
             }
         }
+        var listMode = Enum.Parse(App.GetType("PureRDP.Configuration.ConnectionLibraryViewMode")!, "List");
+        card.GetType().GetMethod("SetViewMode")!.Invoke(card, new[] { listMode });
+        foreach (var rowWidth in new[] { 560, 720, 900, 1200, 1500 })
+        {
+            card.Width = rowWidth;
+            var actions = (Control)Field(card, "_actionPanel");
+            var rowColumns = new[] { "_titleLabel", "_hostLabel", "_metaLabel", "_hintLabel", "_qualityLabel" }
+                .Select(name => (Control)Field(card, name)).Where(c => c.Visible).ToArray();
+            foreach (var column in rowColumns)
+                Check(column.Width > 0 && column.Right < actions.Left && column.Top == 14,
+                    "List columns must fit on one baseline before actions at width " + rowWidth);
+            for (var i = 1; i < rowColumns.Length; i++)
+                Check(rowColumns[i - 1].Right <= rowColumns[i].Left,
+                    "Responsive list columns must not overlap at width " + rowWidth);
+            Render(card, "ResponsiveList-" + rowWidth);
+        }
+        using (var responsiveLibrary = (Control)New("UI.ConnectionLibraryPanel"))
+        using (var row = (Control)New("UI.ConnectionCardControl", connection))
+        {
+            responsiveLibrary.GetType().GetField("_viewMode", Members)!.SetValue(responsiveLibrary, listMode);
+            row.GetType().GetMethod("SetViewMode")!.Invoke(row, new[] { listMode });
+            var items = (FlowLayoutPanel)Field(responsiveLibrary, "_itemsPanel");
+            items.Controls.Add(row);
+            foreach (var viewport in new[] { 640, 800, 1000, 1500 })
+            {
+                responsiveLibrary.Size = new Size(viewport, 480);
+                responsiveLibrary.PerformLayout();
+                responsiveLibrary.GetType().GetMethod("UpdateCardSizes", Members)!.Invoke(responsiveLibrary, null);
+                Check(row.Width + row.Margin.Horizontal <= items.ClientSize.Width - items.Padding.Horizontal,
+                    "List must not force a 1200px horizontal overflow at viewport " + viewport);
+            }
+        }
         var tokens = App.GetType("PureRDP.UI.UiDesignTokens")!;
         var accent = (Color)tokens.GetField("Accent")!.GetValue(null)!;
         Check(Contrast(accent, Color.White) >= 4.5, "Primary button contrast must meet AA.");

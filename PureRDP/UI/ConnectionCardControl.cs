@@ -399,13 +399,27 @@ internal sealed class ConnectionCardControl : UserControl
             _qualityLabel.TextAlign = ContentAlignment.MiddleLeft;
             SetLogicalBounds(_pinButton, width - 64, 14, 28, 28);
             SetLogicalBounds(_avatarPanel, 16, 14, 28, 28);
-            SetLogicalBounds(_titleLabel, 54, 14, 104, 28);
-            SetLogicalBounds(_hostLabel, 166, 14, 160, 28);
-            SetLogicalBounds(_metaLabel, 334, 14, 120, 28);
-            SetLogicalBounds(_hintLabel, 462, 14, 150, 28);
-            SetLogicalBounds(_qualityLabel, 620, 14, Math.Max(1, Logical(_actionPanel.Left) - 632), 28);
+            var contentWidth = Math.Max(1, Logical(_actionPanel.Left) - 66);
+            var showQuality = contentWidth >= 600;
+            var columnBudget = contentWidth - (showQuality ? 32 : 24);
+            var titleWidth = columnBudget * 18 / 100;
+            var hostWidth = columnBudget * (showQuality ? 23 : 30) / 100;
+            var userWidth = columnBudget * (showQuality ? 18 : 22) / 100;
+            var hintWidth = columnBudget * (showQuality ? 23 : 30) / 100;
+            var x = 54;
+            foreach (var (label, columnWidth) in new[] {
+                (_titleLabel, titleWidth), (_hostLabel, hostWidth),
+                (_metaLabel, userWidth), (_hintLabel, hintWidth) })
+            {
+                label.AutoEllipsis = true;
+                SetLogicalBounds(label, x, 14, columnWidth, 28);
+                x += columnWidth + 8;
+            }
+            SetLogicalBounds(_qualityLabel, x, 14, showQuality ? contentWidth - (x - 54) : 1, 28);
+            _qualityLabel.Visible = showQuality;
             return;
         }
+        _qualityLabel.Visible = true;
         _qualityLabel.AutoEllipsis = false;
         _qualityLabel.TextAlign = ContentAlignment.TopLeft;
         _qualityLabel.Text = !isList && !isHorizontal && qualityLines.Length == 4

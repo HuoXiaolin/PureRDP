@@ -81,6 +81,18 @@ PureRDP 是一款面向 Windows 的远程桌面连接管理工具。它以微软
 
 项目基于 C#、WinForms 和 .NET 10，使用 Windows RDP ActiveX；构建与回归需要 Windows 和 .NET 10 SDK。源码包含构建脚本与离线回归检查，但它们不能替代真实会话、高 DPI、多显示器和长时间运行验证。
 
+## 感谢与支持
+
+感谢您使用 PureRDP！如果它让您的远程连接更顺手，欢迎给项目点一颗 Star、分享给需要的朋友，或通过 Issue 提出建议。
+
+如果您喜欢这个项目，也可以自愿赞助，为开发补充一点动力。您的支持将帮助分担 AI 辅助开发的 Token 费用，以及日常测试与维护成本，让更多改进持续发生。
+
+赞助完全自愿，不影响任何功能的使用。每一次使用、反馈和支持，都是 PureRDP 继续完善的动力。
+
+| 支付宝 | 微信支付 |
+| :---: | :---: |
+| <img src="docs/sponsor/alipay.jpg" alt="支付宝自愿赞助收款码" width="240" /> | <img src="docs/sponsor/wechat-pay.png" alt="微信支付自愿赞助收款码" width="240" /> |
+
 ## 作者与许可
 
 作者：HuoXiaolin。

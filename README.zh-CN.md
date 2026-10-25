@@ -139,6 +139,10 @@ dotnet publish PureRDP/PureRDP.csproj -c Release -r win-x64 --self-contained fal
 
 编译、渲染和离线回归不等于真实 RDP 会话、高 DPI、多显示器或长时间运行验收。
 
+## 感谢与支持
+
+感谢您使用 PureRDP！欢迎通过 Star、分享和反馈支持项目，也可以自愿赞助，帮助分担 AI 辅助开发的 Token 费用及测试维护成本。赞助不影响任何功能的使用，收款码见 [项目介绍中的感谢与支持](README.md#感谢与支持)。
+
 ## 项目来源与许可
 
 基于 [fschick/FluentRDP](https://github.com/fschick/FluentRDP) 的中文衍生版本，保留微软原生 RDP ActiveX 核心。源代码沿用上游 GPL-3.0 许可证，原作者及许可见 LICENSE。这不是上游官方中文发行版。

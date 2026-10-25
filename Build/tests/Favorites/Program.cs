@@ -67,11 +67,14 @@ internal static class Program
             var rowIndex = 0;
             foreach (var row in rows)
             {
-                var expectedWidth = Math.Max(view == 2 ? 1200 : 280,
+                var expectedWidth = Math.Max(view == 2 ? 560 : 280,
                     availableWidth / columnCount + (rowIndex++ % columnCount < availableWidth % columnCount ? 1 : 0) - row.Margin.Horizontal);
                 Check(row.Width == expectedWidth, "Device must fill its responsive grid cell or full row.");
                 if (view == 2)
                 {
+                    if (availableWidth - row.Margin.Horizontal >= 560)
+                        Check(row.Width + row.Margin.Horizontal == availableWidth,
+                            "List must fit the viewport without forcing a 1200px row.");
                     var fields = new[] { "_titleLabel", "_hostLabel", "_metaLabel", "_hintLabel", "_qualityLabel" }
                         .Select(name => (Control)Field(row, name)).ToArray();
                     Check(fields.Select(field => field.Top).Distinct().Count() == 1 && row.Height == 56,

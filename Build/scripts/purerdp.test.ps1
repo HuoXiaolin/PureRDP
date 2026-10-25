@@ -42,6 +42,15 @@ try {
         $watch.Stop()
         $output | ForEach-Object { Write-Host $_ }
         [IO.File]::WriteAllLines((Join-Path $reports "$name.log"), [string[]]$output)
+        if ($code -ne 0) {
+            Write-Host "FAIL: $name regression suite (exit $code); log: $reports\$name.log"
+            if ($env:GITHUB_ACTIONS -eq 'true') {
+                $detail = ($output | Where-Object { $_ -match 'Unhandled exception|Exception:|error [A-Z]+[0-9]+|^FAIL' } | Select-Object -First 1)
+                if (-not $detail) { $detail = "Exit code $code; see $name.log in test-results." }
+                $detail = $detail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Host "::error title=$name regression failed::$detail"
+            }
+        }
         $results += [pscustomobject]@{ Name=$name; ExitCode=$code; Seconds=$watch.Elapsed.TotalSeconds; Output=($output -join "`n") }
     }
     $writer = [Xml.XmlWriter]::Create((Join-Path $reports 'regression-results.xml'))

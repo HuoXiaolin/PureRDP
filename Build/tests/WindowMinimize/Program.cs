@@ -563,6 +563,31 @@ internal static class Program
         Check(reopened.Bounds == rememberedBounds, "Removing startup window chrome must not shrink the saved geometry.");
         Call(reopened, "ApplyConnectionWindowSize", false);
         Check(reopened.Bounds == rememberedBounds, "Later profile-size application must preserve the last manual bounds.");
+        connection.GetType().GetProperty("AutoMaximizeWindow")!.SetValue(connection, true);
+        restoredSettings.GetType().GetProperty("FullScreen")!.SetValue(restoredSettings, true);
+        reopened.Show();
+        Call(reopened, "ApplyPersistedWindowSettings", restoredSettings);
+        Pump();
+        Check(reopened.WindowState == FormWindowState.Maximized && IsZoomed(reopened.Handle),
+            "Explicit automatic window fill must override remembered manual geometry on startup.");
+        Check(!(bool)Field(reopened, "_restoreFullScreenOnConnect") &&
+            !(bool)Field(reopened, "_reconnectFullScreen"),
+            "Window fill must not restore an old true-fullscreen preference.");
+        Call(reopened, "RdpService_Connected", reopened, EventArgs.Empty);
+        Pump();
+        Check(reopened.WindowState == FormWindowState.Maximized && IsZoomed(reopened.Handle),
+            "Connected chrome must preserve automatic window fill rather than restoring manual bounds.");
+        Check(!(bool)Field(reopened, "_applyConnectionWindowSizeAfterConnect"),
+            "Connection completion must not apply fixed profile dimensions over automatic window fill.");
+        Call(reopened, "GlassChromeStrip_MaximizeRequested", reopened, EventArgs.Empty);
+        Pump();
+        Check(reopened.WindowState == FormWindowState.Normal && reopened.Size == rememberedBounds.Size,
+            "Explicit unmaximize must still recover the remembered manual window size.");
+        connection.GetType().GetProperty("AutoMaximizeWindow")!.SetValue(connection, false);
+        restoredSettings.GetType().GetProperty("FullScreen")!.SetValue(restoredSettings, false);
+        Call(reopened, "ApplyPersistedWindowSettings", restoredSettings);
+        Check(reopened.WindowState == FormWindowState.Normal && reopened.Bounds == rememberedBounds,
+            "Disabling automatic fill must restore manual geometry on the next startup.");
         var service = Field(window, "_rdpService");
         Call(service, "SetFullScreen", true, true);
         Call(service, "SetFullScreen", false, true);

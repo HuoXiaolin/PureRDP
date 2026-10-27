@@ -36,7 +36,7 @@ public partial class FormRdpClient : Form
     private readonly FormSystemMenuService _formSystemMenuService;
 
     // Cancellation token source for delayed connection message display
-    private CancellationTokenSource? _connectionDelayCts;
+    private readonly CrystalLoaderControl _connectionLoader = new();
     private ConnectionLibraryPanel? _connectionLibraryPanel;
     private GlassWindowControlStrip? _glassChromeStrip;
     private GlassWindowControlStrip[] _cornerGrips = [];
@@ -116,6 +116,14 @@ public partial class FormRdpClient : Form
         _previewOnly = previewOnly;
 
         InitializeComponent();
+        panelConnect.Controls.Add(_connectionLoader);
+        panelConnect.Resize += ConnectingSurface_Resize;
+        panelConnect.BackColor = Color.FromArgb(247, 250, 253);
+        _connectionLoader.BackColor = panelConnect.BackColor;
+        lbConnecting.Font = new Font(UiDesignTokens.FontFamily, 11F);
+        lbConnecting.AutoEllipsis = true;
+        btnCancel.Font = new Font(UiDesignTokens.FontFamily, 10F);
+        LayoutConnectingSurface();
         // Do not expose the default WinForms gray/white surface while the
         // native RDP control is being resized or is waiting for a remote
         // display update. Any unavoidable aspect-ratio edge is rendered as a
@@ -2068,9 +2076,6 @@ public partial class FormRdpClient : Form
 
     private void ShowConnectingMessage(string message)
     {
-        _connectionDelayCts?.Cancel();
-        _connectionDelayCts?.Dispose();
-
         // Keep the management window's native title bar while a connection is
         // being negotiated. The glass controls belong to the connected canvas.
         SetRemoteConnectionChrome(false);
@@ -2082,23 +2087,27 @@ public partial class FormRdpClient : Form
         panelRdp.Visible = true;
         panelConnect.Visible = true;
         panelConnect.BringToFront();
+        _connectionLoader.SetLoading(true);
 
-        _connectionDelayCts = new CancellationTokenSource();
-        var token = _connectionDelayCts.Token;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(1000, token);
-                await InvokeAsync(() =>
-                {
-                    lbConnecting.Text = message;
-                    lbConnecting.Visible = true;
-                    btnCancel.Visible = true;
-                }, token);
-            }
-            catch (OperationCanceledException) { }
-        }, token);
+        lbConnecting.Text = message;
+        lbConnecting.Visible = true;
+        btnCancel.Visible = true;
+        LayoutConnectingSurface();
+    }
+
+    private void ConnectingSurface_Resize(object? sender, EventArgs e) => LayoutConnectingSurface();
+
+    private void LayoutConnectingSurface()
+    {
+        var dpi = DeviceDpi / 96f;
+        int Px(int value) => (int)Math.Round(value * dpi);
+        var width = panelConnect.ClientSize.Width;
+        var height = panelConnect.ClientSize.Height;
+        var loaderSize = Math.Max(Px(60), Math.Min(Px(200), height - Px(110)));
+        var top = Math.Max(Px(8), (height - loaderSize - Px(92)) / 2);
+        _connectionLoader.SetBounds((width - loaderSize) / 2, top, loaderSize, loaderSize);
+        lbConnecting.SetBounds(Px(16), top + loaderSize, Math.Max(1, width - Px(32)), Px(36));
+        btnCancel.SetBounds((width - Px(112)) / 2, top + loaderSize + Px(48), Px(112), Px(36));
     }
 
     private void StartConnection()
@@ -2265,12 +2274,10 @@ public partial class FormRdpClient : Form
 
     private void HideConnectingMessage()
     {
+        _connectionLoader.SetLoading(false);
         panelConnect.Visible = false;
         lbConnecting.Visible = false;
         btnCancel.Visible = false;
-        _connectionDelayCts?.Cancel();
-        _connectionDelayCts?.Dispose();
-        _connectionDelayCts = null;
     }
 
     private void ToggleFullScreen()
@@ -2453,14 +2460,13 @@ public partial class FormRdpClient : Form
         _appSettings.Window.MergeFrom(persistedSettings);
         this.ApplyWindowSettings(_appSettings.Window);
         if (!_isSessionWindow) EnsureConsoleOnScreen();
-        _restoreFullScreenOnConnect = _isSessionWindow && _appSettings.Window.FullScreen == true;
+        _restoreFullScreenOnConnect = _isSessionWindow && !ShouldAutoMaximizeWindow &&
+                                      _appSettings.Window.FullScreen == true;
         _fullScreenMultiMonitor = _appSettings.Window.FullScreenMultiMonitor == true;
         _reconnectFullScreen = _restoreFullScreenOnConnect;
         _reconnectFullScreenMultiMonitor = _fullScreenMultiMonitor;
 
         _applyConnectionWindowSizeAfterConnect = false;
-        if (_isSessionWindow && TryRestoreManualWindowBounds())
-            return;
         if (_isSessionWindow && ShouldAutoMaximizeWindow)
         {
             // WindowState.Maximized uses the monitor working area, so the
@@ -2468,6 +2474,8 @@ public partial class FormRdpClient : Form
             // screen, which uses the entire monitor bounds.
             WindowState = FormWindowState.Maximized;
         }
+        else if (_isSessionWindow && TryRestoreManualWindowBounds())
+            return;
         else if (_isSessionWindow && HasConnectionWindowSize)
         {
             // Profile dimensions initialize windows that have not yet been
@@ -3031,8 +3039,7 @@ public partial class FormRdpClient : Form
                 _trayIcon.Dispose();
             }
             _trayMenu?.Dispose();
-            _connectionDelayCts?.Cancel();
-            _connectionDelayCts?.Dispose();
+            _connectionLoader.Dispose();
             _formResizeDetectionService.Dispose();
             _formSizeEnforcementService.Dispose();
             _formSystemMenuService.Dispose();

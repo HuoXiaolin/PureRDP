@@ -161,6 +161,62 @@ internal static class Program
         Render(device, "DeviceSettingsFilled");
         using var reconnect = (Form)New("UI.RdpReconnectDialog", "示例设备");
         Render(reconnect, "Reconnect");
+        using (var loadingHost = (Form)New("UI.FormRdpClient", Array.Empty<string>(), true, null))
+        {
+            var shown = loadingHost.GetType().GetMethod("FormRdpClient_Shown", Members)!;
+            loadingHost.Shown -= (EventHandler)shown.CreateDelegate(typeof(EventHandler), loadingHost);
+            var closing = loadingHost.GetType().GetMethod("FormRdpClient_FormClosing", Members)!;
+            loadingHost.FormClosing -= (FormClosingEventHandler)closing.CreateDelegate(typeof(FormClosingEventHandler), loadingHost);
+            loadingHost.StartPosition = FormStartPosition.Manual;
+            loadingHost.Location = new Point(-20000, -20000);
+            loadingHost.ShowInTaskbar = false;
+            loadingHost.Show();
+            loadingHost.GetType().GetMethod("ShowConnectingMessage", Members)!.Invoke(loadingHost,
+                new object[] { "正在连接 示例工作站…" });
+            var loader = (Control)Field(loadingHost, "_connectionLoader");
+            var animationTimer = (System.Windows.Forms.Timer)Field(loader, "_timer");
+            var connectingPanel = (Control)Field(loadingHost, "panelConnect");
+            Check(loadingHost.Controls.GetChildIndex(connectingPanel) == 0,
+                "Loading surface must stay above the visible native RDP host.");
+            Check(animationTimer.Enabled, "Visible connecting surface must animate.");
+            System.Threading.Thread.Sleep(1800);
+            Application.DoEvents();
+            foreach (var viewport in new[] { new Size(800, 560), new Size(420, 260) })
+            {
+                loadingHost.ClientSize = viewport;
+                Application.DoEvents();
+                var status = (Control)Field(loadingHost, "lbConnecting");
+                var cancel = (Control)Field(loadingHost, "btnCancel");
+                Check(status.Visible && cancel.Visible, "Loading status and cancellation must be immediately available.");
+                Check(loader.Bottom <= status.Top && status.Bottom <= cancel.Top && cancel.Bottom <= connectingPanel.Height,
+                    "Crystal loading layout must fit small and normal windows without overlapping controls.");
+                // Capture the loading panel directly: Form.DrawToBitmap also
+                // prints its native RDP sibling even when it is behind it.
+                Render(connectingPanel, "ConnectingCrystals-" + viewport.Width);
+            }
+            using var frameA = new Bitmap(200, 200);
+            using var frameB = new Bitmap(200, 200);
+            using (var graphics = Graphics.FromImage(frameA))
+                loader.GetType().GetMethod("PaintFrame", Members)!.Invoke(loader, new object[] { graphics, .8 });
+            using (var graphics = Graphics.FromImage(frameB))
+                loader.GetType().GetMethod("PaintFrame", Members)!.Invoke(loader, new object[] { graphics, 2.1 });
+            var differences = 0;
+            for (var y = 0; y < 200; y++)
+                for (var x = 0; x < 200; x++)
+                    if (frameA.GetPixel(x, y) != frameB.GetPixel(x, y)) differences++;
+            Check(differences > 100, "Crystal phases must produce different visible frames.");
+            frameB.Save(Path.Combine("outputs", "ui-review", "CrystalLoader-frame.png"), ImageFormat.Png);
+            loadingHost.WindowState = FormWindowState.Minimized;
+            Application.DoEvents();
+            Check(!animationTimer.Enabled, "Minimized loading window must stop rendering ticks.");
+            loadingHost.WindowState = FormWindowState.Normal;
+            Application.DoEvents();
+            Check(animationTimer.Enabled, "Restored loading window must resume its animation.");
+            loadingHost.GetType().GetMethod("HideConnectingMessage", Members)!.Invoke(loadingHost, null);
+            Check(!animationTimer.Enabled, "Connection completion must stop animation ticks.");
+            loadingHost.Dispose();
+            Check(!animationTimer.Enabled, "Disposed loading controls must not retain an active timer.");
+        }
         using var canvas = new Form { ClientSize = new Size(1080, 720) };
         using var library = (Control)New("UI.ConnectionLibraryPanel");
         canvas.Controls.Add(library);

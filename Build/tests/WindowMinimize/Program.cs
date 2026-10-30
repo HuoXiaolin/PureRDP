@@ -57,6 +57,7 @@ internal static class Program
         if (File.Exists(failureFile)) File.Delete(failureFile);
         TestSilentStartupVisibility();
         TestPreLoginViewport();
+        TestRoutingPacket();
         using var manager = Window(null);
         _ = manager.Handle;
         using var first = Window(manager);
@@ -80,6 +81,16 @@ internal static class Program
         Call(first, "PositionWindowChrome");
         Pump();
         var visibleGrip = (Control)bottomRight;
+        Check(first.Region != null && !first.Region.IsVisible(0, 0) && first.Region.IsVisible(16, 1),
+            "Connected windows must have a default 16-pixel rounded clipping region.");
+        var originalRoundedRegion = first.Region;
+        Call(first, "PositionWindowChrome");
+        Check(ReferenceEquals(first.Region, originalRoundedRegion), "Unchanged geometry must reuse its region without repeated GDI allocations.");
+        typeof(FormRdpClient).GetField("_roundedConnectionCorners", Members)!.SetValue(first, false);
+        Call(first, "PositionWindowChrome");
+        Check(first.Region == null, "Turning rounded corners off must restore rectangular geometry.");
+        typeof(FormRdpClient).GetField("_roundedConnectionCorners", Members)!.SetValue(first, true);
+        Call(first, "PositionWindowChrome");
         Check(visibleGrip.Size == new Size(5, 5), "Resize corner must be approximately one third of its previous dimensions.");
         using (var cornerSurface = (Bitmap)Call(visibleGrip, "CreateSurfaceBitmap"))
             Check(cornerSurface.GetPixel(0, 0).A is > 0 and <= 32, "Resize corner must be nearly transparent but retain native input.");
@@ -87,6 +98,11 @@ internal static class Program
         var nativeTarget = WindowFromPoint(nativePoint);
         Console.WriteLine($"Corner routing: grip={visibleGrip.Handle} target={nativeTarget} targetControl={Control.FromHandle(nativeTarget)?.GetType().Name} visible={visibleGrip.Visible} enabled={visibleGrip.Enabled} composition={visibleGrip.GetType().GetProperty("LastCompositionError", Members)!.GetValue(visibleGrip)} bounds={visibleGrip.Bounds}");
         Check(nativeTarget == visibleGrip.Handle, "A real bottom-right click must hit the resize grip, not the RDP surface or another window.");
+        Check(first.Region != null && !first.Region.IsVisible(first.Width - 2, first.Height - 2),
+            "The corner overlay must remain hittable even outside the clipped host region.");
+        foreach (Control corner in grips)
+            Check(WindowFromPoint(corner.PointToScreen(new Point(2, 2))) == corner.Handle,
+                "Both bottom corner overlays must remain real native hit targets with rounded host corners.");
         foreach (var localPoint in new[] { new Point(1, 1), new Point(3, 3) })
             Check(WindowFromPoint(visibleGrip.PointToScreen(localPoint)) == visibleGrip.Handle,
                 "Resize target must remain hittable away from its center.");
@@ -354,6 +370,52 @@ internal static class Program
         Console.WriteLine($"PASS: {_checks} minimize/restore checks; real host HWNDs, no RDP login.");
     }
 
+    private static void TestRoutingPacket()
+    {
+        // Capture only the first X.224 request on loopback. No server handshake,
+        // credentials, remote login or user-provided ticket is involved.
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var captured = System.Threading.Tasks.Task.Run(async () =>
+        {
+            using var peer = await listener.AcceptTcpClientAsync(timeout.Token);
+            var stream = peer.GetStream();
+            var header = new byte[4];
+            await stream.ReadExactlyAsync(header, timeout.Token);
+            var length = (header[2] << 8) | header[3];
+            if (length < 4 || length > 4096) throw new Exception("Invalid loopback TPKT length.");
+            var packet = new byte[length];
+            header.CopyTo(packet, 0);
+            await stream.ReadExactlyAsync(packet.AsMemory(4), timeout.Token);
+            // End this transport-only fixture without a server negotiation.
+            return packet;
+        });
+        using var window = Window(null);
+        window.Show();
+        var service = Field(window, "_rdpService");
+        var profile = Field(window, "_appSettings").GetType().GetProperty("Connection")!.GetValue(Field(window, "_appSettings"))!;
+        profile.GetType().GetProperty("LoadBalanceInfo")!.SetValue(profile, "Cookie: msts=purerdp-wire-fixture");
+        service.GetType().GetField("_connectionSettings", Members)!.SetValue(service, profile);
+        Call(service, "CreateRdpControlAndClient");
+        try
+        {
+            var native = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
+            native.Server = "127.0.0.1";
+            native.AdvancedSettings9.RDPPort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            native.AdvancedSettings9.EnableAutoReconnect = false;
+            Call(service, "ApplyRoutingSettings");
+            native.Connect();
+            while (!captured.IsCompleted && !timeout.IsCancellationRequested) { Application.DoEvents(); Thread.Sleep(10); }
+            var bytes = captured.GetAwaiter().GetResult();
+            var expected = System.Text.Encoding.ASCII.GetBytes("Cookie: msts=purerdp-wire-fixture \r\n");
+            Check(bytes.AsSpan(11).StartsWith(expected), "X.224 must contain exact ASCII routing cookie bytes and CRLF, without UTF-16 nulls.");
+            Console.WriteLine("PASS: synthetic routing cookie verified in loopback X.224 packet.");
+            if (native.Connected != 0) native.Disconnect();
+        }
+        finally { Call(service, "RemoveRdpControlAndClient"); }
+    }
+
     private static void TestPreLoginViewport()
     {
         Console.WriteLine("Pre-login regression: creating isolated host.");
@@ -368,6 +430,10 @@ internal static class Program
         profile.GetType().GetProperty("Password")!.SetValue(profile, null);
         profile.GetType().GetProperty("Width")!.SetValue(profile, 1600);
         profile.GetType().GetProperty("Height")!.SetValue(profile, 900);
+        profile.GetType().GetProperty("PreserveImportedDesktop")!.SetValue(profile, true);
+        Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(1600, 900),
+            "Broker compatibility must honor the imported initial resolution before any desktop negotiation.");
+        profile.GetType().GetProperty("PreserveImportedDesktop")!.SetValue(profile, null);
         service.GetType().GetField("_connectionSettings", Members)!.SetValue(service, profile);
         Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(800, 600),
             "Dynamic pre-login sizing must use the window even when the profile contains an older desktop resolution.");
@@ -392,6 +458,55 @@ internal static class Program
         {
         Console.WriteLine("Pre-login regression: configuring local desktop.");
         var client = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
+        profile.GetType().GetProperty("AlternateShell")!.SetValue(profile, "fixture-remote-startup --ticket=example:token");
+        profile.GetType().GetProperty("ShellWorkingDirectory")!.SetValue(profile, "C:\\fixture remote");
+        Call(service, "ApplyRemoteStartupSettings");
+        Check(client.Connected == 0 && client.SecuredSettings3.StartProgram == "fixture-remote-startup --ticket=example:token" &&
+            client.SecuredSettings3.WorkDir == "C:\\fixture remote",
+            "Disconnected native ActiveX must receive the remote startup command and working directory without local execution or login.");
+        profile.GetType().GetProperty("AlternateShell")!.SetValue(profile, null);
+        profile.GetType().GetProperty("ShellWorkingDirectory")!.SetValue(profile, null);
+        Call(service, "ApplyRemoteStartupSettings");
+        Check(string.IsNullOrEmpty(client.SecuredSettings3.StartProgram) && string.IsNullOrEmpty(client.SecuredSettings3.WorkDir),
+            "Reusing a native control for an ordinary session must clear the previous startup payload.");
+        var syntheticClear = System.Text.Encoding.Unicode.GetBytes("fixture-native-import-password");
+        var syntheticEncrypted = System.Security.Cryptography.ProtectedData.Protect(syntheticClear, null,
+            System.Security.Cryptography.DataProtectionScope.CurrentUser);
+        try
+        {
+            profile.GetType().GetProperty("EncryptedPassword51")!.SetValue(profile, Convert.ToHexString(syntheticEncrypted));
+            Call(service, "ApplyConnectionPassword");
+            Check(client.Connected == 0 && profile.GetType().GetProperty("Password")!.GetValue(profile) == null,
+                "Disconnected ActiveX must accept the imported password without a login or plaintext profile mutation.");
+            ((MSTSCLib.IMsTscNonScriptable)client).ResetPassword();
+        }
+        finally
+        {
+            profile.GetType().GetProperty("EncryptedPassword51")!.SetValue(profile, null);
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(syntheticClear);
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(syntheticEncrypted);
+        }
+        var routingProperty = profile.GetType().GetProperty("LoadBalanceInfo")!;
+        Check((bool)Call(service, "TryBeginDisplayRequest", 1200u, 800u, 100u), "A new desktop request must be permitted.");
+        for (var repeat = 0; repeat < 12; repeat++)
+            Check(!(bool)Call(service, "TryBeginDisplayRequest", 1200u, 800u, 100u), "An unacknowledged broker size must not be repeatedly requested.");
+        Check((bool)Call(service, "TryBeginDisplayRequest", 1280u, 800u, 100u), "A real user resize must permit a new request.");
+        Check((bool)Call(service, "TryBeginDisplayRequest", 1280u, 800u, 125u), "A genuine DPI change must permit a new request.");
+        var fixtureCookie = "Cookie: msts=purerdp-fixture-only";
+        routingProperty.SetValue(profile, fixtureCookie);
+        Call(service, "ApplyRoutingSettings");
+        Check(System.Text.Encoding.Unicode.GetBytes(client.AdvancedSettings9.LoadBalanceInfo).SequenceEqual(
+            System.Text.Encoding.UTF8.GetBytes(fixtureCookie + " \r\n")),
+            "Disconnected ActiveX must receive the imported routing cookie before Connect.");
+        routingProperty.SetValue(profile, fixtureCookie + "\r\n");
+        Call(service, "ApplyRoutingSettings");
+        Check(System.Text.Encoding.Unicode.GetBytes(client.AdvancedSettings9.LoadBalanceInfo).SequenceEqual(
+            System.Text.Encoding.UTF8.GetBytes(fixtureCookie + " \r\n")),
+            "Routing must not duplicate an existing CRLF terminator.");
+        routingProperty.SetValue(profile, null);
+        Call(service, "ApplyRoutingSettings");
+        Check(string.IsNullOrEmpty(client.AdvancedSettings9.LoadBalanceInfo),
+            "Ordinary connections must not inherit an earlier session ticket.");
         client.DesktopWidth = 800;
         client.DesktopHeight = 600;
         service.GetType().GetField("_viewDesktop", Members)!.SetValue(service, new Size(800, 600));

@@ -47,6 +47,8 @@ public partial class FormRdpClient : Form
     private bool _autoTileSessions;
     private ControlBarPosition _globalControlBarPosition = ControlBarPosition.Right;
     private bool _globalControlBarAutoHide = true;
+    private bool _roundedConnectionCorners = true;
+    private Size _roundedRegionSize;
     private bool _arrangingSessions;
     private bool _idleMemoryCleanupPending;
     private GlobalShortcutPreferences _globalShortcutPreferences = new();
@@ -163,6 +165,7 @@ public partial class FormRdpClient : Form
             _autoTileSessions = globalSettings.Windows.AutoTileSessions;
             _globalControlBarPosition = globalSettings.Windows.ControlBarDock;
             _globalControlBarAutoHide = globalSettings.Windows.ControlBarAutoHide;
+            _roundedConnectionCorners = globalSettings.Windows.RoundedConnectionCorners;
             _globalShortcutPreferences = globalSettings.Shortcuts.Clone();
             _globalShortcutFilter = new GlobalShortcutMessageFilter(this);
             Application.AddMessageFilter(_globalShortcutFilter);
@@ -273,6 +276,12 @@ public partial class FormRdpClient : Form
 
         try
         {
+            var nativeLaunch = RdpCompatibilityService.Plan(args, GlobalSettingsService.Load().RdpProxy.PreferNativeClient);
+            if (nativeLaunch != null)
+            {
+                LaunchNativeCompatibility(nativeLaunch);
+                return;
+            }
             var incomingSettings = CommandLineOptions.Parse(args);
             // A second login/startup invocation must not wake an existing
             // tray instance or replace its interactive connection settings.
@@ -289,6 +298,16 @@ public partial class FormRdpClient : Form
         }
     }
 
+    private async void LaunchNativeCompatibility(NativeMstscLaunch launch)
+    {
+        try { await Task.Run(() => NativeMstscLauncher.Run(launch)); }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            if (!IsDisposed) MessageBox.Show(this, "原生远程桌面兼容启动未完成，请关闭启动代理后重试。",
+                "PureRDP · 连接未打开", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private void OpenSessionWindow()
     {
         var existing = _sessionWindows.FirstOrDefault(window => !window.IsDisposed && !window._sessionClosing &&
@@ -298,7 +317,7 @@ public partial class FormRdpClient : Form
             string.Equals(window._appSettings.Connection.Domain, _appSettings.Connection.Domain, StringComparison.OrdinalIgnoreCase));
         if (existing != null)
         {
-            existing.ApplyConnectionSettings(_appSettings.Connection);
+            existing.ApplyConnectionSettings(_appSettings.Connection, _appSettings.IsExternalConnection);
             ActivateSession(existing);
             ArrangeSessions();
             return;
@@ -309,6 +328,7 @@ public partial class FormRdpClient : Form
             _appSettings = new ApplicationSettings
             {
                 Connection = _appSettings.Connection.Clone(),
+                IsExternalConnection = _appSettings.IsExternalConnection,
                 NoCloseOnDisconnect = true,
             },
         };
@@ -328,6 +348,7 @@ public partial class FormRdpClient : Form
         sessionWindow._formSizeEnforcementService.IsActive = sessionWindow._appSettings.Connection.AutoResize == true ||
                                                               sessionWindow._appSettings.Connection.AutoMaximizeWindow == true;
         sessionWindow._globalControlBarAutoHide = _globalControlBarAutoHide;
+        sessionWindow._roundedConnectionCorners = _roundedConnectionCorners;
         sessionWindow._glassChromeStrip?.SetAutoHide(_globalControlBarAutoHide);
         sessionWindow._launchedFromLibrary = true;
         _sessionWindow = sessionWindow;
@@ -522,6 +543,7 @@ public partial class FormRdpClient : Form
             _autoTileSessions = window.SavedSettings.Windows.AutoTileSessions;
             _globalControlBarPosition = window.SavedSettings.Windows.ControlBarDock;
             _globalControlBarAutoHide = window.SavedSettings.Windows.ControlBarAutoHide;
+            _roundedConnectionCorners = window.SavedSettings.Windows.RoundedConnectionCorners;
             _globalShortcutPreferences = window.SavedSettings.Shortcuts.Clone();
             RefreshShortcutAvailability();
             // RDP may install/reinstall its native keyboard hook while the
@@ -540,6 +562,7 @@ public partial class FormRdpClient : Form
             foreach (var session in _sessionWindows)
             {
                 session._globalControlBarAutoHide = _globalControlBarAutoHide;
+                session._roundedConnectionCorners = _roundedConnectionCorners;
                 session._glassChromeStrip?.SetAutoHide(_globalControlBarAutoHide);
                 session.ApplyKeyboardModeForCurrentWindow();
                 session.PositionWindowChrome();
@@ -803,6 +826,7 @@ public partial class FormRdpClient : Form
         // title bar. The compact glass control strip is only enabled for the
         // connected remote-desktop surface.
         FormBorderStyle = FormBorderStyle.Sizable;
+        UpdateConnectionCornerRegion();
         ControlBox = true;
         MaximizeBox = true;
         MinimizeBox = true;
@@ -914,6 +938,7 @@ public partial class FormRdpClient : Form
             _glassChromeStrip.Visible = false;
         }
 
+        UpdateConnectionCornerRegion();
         FormBorderStyle = FormBorderStyle.Sizable;
         ControlBox = true;
         MaximizeBox = true;
@@ -922,6 +947,7 @@ public partial class FormRdpClient : Form
 
     private void PositionWindowChrome()
     {
+        UpdateConnectionCornerRegion();
         if (_glassChromeStrip == null || _glassChromeStrip.IsDisposed || IsDisposed ||
             Disposing || _sessionClosing || !_remoteChromeActive || !Visible ||
             WindowState == FormWindowState.Minimized)
@@ -961,6 +987,32 @@ public partial class FormRdpClient : Form
 
     internal bool IsRemoteWindowResizable
         => _remoteChromeActive && !_rdpService.FullScreen && WindowState != FormWindowState.Minimized;
+
+    private void UpdateConnectionCornerRegion()
+    {
+        if (IsDisposed || Disposing) return;
+        var rounded = _remoteChromeActive && !_previewOnly && _roundedConnectionCorners &&
+            _rdpService?.FullScreen != true && WindowState != FormWindowState.Minimized;
+        if (!rounded || Width < 32 || Height < 32)
+        {
+            if (Region != null) { var old = Region; Region = null; old.Dispose(); }
+            _roundedRegionSize = Size.Empty;
+            return;
+        }
+        if (Region != null && _roundedRegionSize == Size) return;
+        // Physical pixels, independent of desktop scaling. The two resize
+        // grips are owned overlay HWNDs, outside this clipped window region.
+        using var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(0, 0, 32, 32, 180, 90);
+        path.AddArc(Width - 32, 0, 32, 32, 270, 90);
+        path.AddArc(Width - 32, Height - 32, 32, 32, 0, 90);
+        path.AddArc(0, Height - 32, 32, 32, 90, 90);
+        path.CloseFigure();
+        var previous = Region;
+        Region = new Region(path);
+        previous?.Dispose();
+        _roundedRegionSize = Size;
+    }
 
     private bool _windowMovePending, _windowMoveActive;
     private Point _windowMoveOrigin;
@@ -1908,6 +1960,17 @@ public partial class FormRdpClient : Form
     private void GlassChromeStrip_CloseRequested(object? sender, EventArgs e)
         => Close();
 
+    private void OpenRdpFile()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "打开 RDP 连接文件", Filter = "远程桌面连接文件 (*.rdp)|*.rdp",
+            DefaultExt = "rdp", CheckFileExists = true, Multiselect = false, RestoreDirectory = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        HandleSingleInstanceCommand(new[] { dialog.FileName });
+    }
+
     private void InitializeConnectionLibrary()
     {
         foreach (Control control in panelStartup.Controls)
@@ -1915,6 +1978,7 @@ public partial class FormRdpClient : Form
         panelStartup.Controls.Clear();
 
         _connectionLibraryPanel = new ConnectionLibraryPanel();
+        _connectionLibraryPanel.OpenRdpFileRequested += OpenRdpFile;
         _connectionLibraryPanel.PreviewSourceProvider = GetPreviewSource;
         _connectionLibraryPanel.PreviewHostProvider = GetPreviewHost;
         _connectionLibraryPanel.ConnectionQualityProvider = GetConnectionQuality;
@@ -1986,6 +2050,7 @@ public partial class FormRdpClient : Form
     private void ConnectionLibrary_ConnectRequested(ConnectionSettings settings)
     {
         _appSettings.Connection = settings.Clone();
+        _appSettings.IsExternalConnection = false;
         _appSettings.RdpFilePath = null;
         _appSettings.NoCloseOnDisconnect = true;
         _launchedFromLibrary = true;
@@ -2069,6 +2134,7 @@ public partial class FormRdpClient : Form
             return;
         }
 
+        _appSettings.Connection.NativeFallback?.CancelIfPending();
         StopAutomaticReconnect();
         HideConnectingMessage();
         _rdpService.Disconnect();
@@ -2133,8 +2199,18 @@ public partial class FormRdpClient : Form
                 _restoreFullScreenOnConnect = false;
             }
         }
+        catch (RdpFilePasswordException exception)
+        {
+            if (TrySwitchToNativeAfterFailure()) return;
+            // An unavailable DPAPI user key cannot recover through network
+            // retries, and must not fall back to another saved credential.
+            StopAutomaticReconnect();
+            HideConnectingMessage();
+            HandleConnectionStartFailure(exception);
+        }
         catch (Exception exception)
         {
+            if (TrySwitchToNativeAfterFailure()) return;
             if (automaticRetry)
             {
                 _automaticReconnectAttemptInProgress = false;
@@ -2148,6 +2224,39 @@ public partial class FormRdpClient : Form
             {
                 HandleConnectionStartFailure(exception);
             }
+        }
+    }
+
+    private bool TrySwitchToNativeAfterFailure()
+    {
+        if (!_isSessionWindow || _previewOnly || _sessionClosing || IsDisposed || !_appSettings.IsExternalConnection)
+            return false;
+        var request = _appSettings.Connection.NativeFallback;
+        if (request == null || !request.TryClaim()) return false;
+        StopAutomaticReconnect();
+        _sessionClosing = true;
+        HideConnectingMessage();
+        _managementWindow?._connectionLibraryPanel?.ShowStatus("PureRDP 连接未成功，正在切换原生远程桌面。");
+        void Switch()
+        {
+            // Tear down the failed embedded session before reusing a broker
+            // ticket in native MSTSC; never negotiate both simultaneously.
+            if (!IsDisposed) Close();
+            RunNativeFallback(request);
+        }
+        if (IsHandleCreated) BeginInvoke((Action)Switch);
+        else Switch();
+        return true;
+    }
+
+    private async void RunNativeFallback(NativeRdpFallback request)
+    {
+        try { await Task.Run(() => request.Run()); }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            var owner = _managementWindow ?? this;
+            if (!owner.IsDisposed) MessageBox.Show(owner, "原生切换未完成，请从运维助手重新发起连接，或关闭启动代理后重试。",
+                "PureRDP · 连接未打开", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -2166,7 +2275,9 @@ public partial class FormRdpClient : Form
             _reconnectDialog = new RdpReconnectDialog(_appSettings.Connection.Hostname ?? "远程计算机");
             _reconnectDialog.RetryRequested += ReconnectDialog_RetryRequested;
             _reconnectDialog.CancelRequested += ReconnectDialog_CancelRequested;
-            _reconnectDialog.Show(this);
+            Controls.Add(_reconnectDialog);
+            _reconnectDialog.Show();
+            _reconnectDialog.BringToFront();
         }
 
         ScheduleAutomaticReconnect(detail);
@@ -2338,7 +2449,7 @@ public partial class FormRdpClient : Form
                 string.Equals(s._appSettings.Connection.Hostname, _appSettings.Connection.Hostname, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(s._appSettings.Connection.Username, _appSettings.Connection.Username, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(s._appSettings.Connection.Domain, _appSettings.Connection.Domain, StringComparison.OrdinalIgnoreCase));
-            target?.ApplyConnectionSettings(_appSettings.Connection);
+            target?.ApplyConnectionSettings(_appSettings.Connection, _appSettings.IsExternalConnection);
         }
 
         // A saved device edit is already persisted by FormSettings. Update
@@ -2409,9 +2520,12 @@ public partial class FormRdpClient : Form
         return mode ?? KeyboardMode.OnLocalComputer;
     }
 
-    private void ApplyConnectionSettings(ConnectionSettings settings)
+    private void ApplyConnectionSettings(ConnectionSettings settings, bool externalConnection = false)
     {
+        if (!ReferenceEquals(_appSettings.Connection.NativeFallback, settings.NativeFallback))
+            _appSettings.Connection.NativeFallback?.CancelIfPending();
         _appSettings.Connection = settings.Clone();
+        _appSettings.IsExternalConnection = externalConnection;
         _formSystemMenuService.UpdateZoomCheckmarks(_appSettings.Connection.ScaleFactor);
         _formSizeEnforcementService.IsActive = _appSettings.Connection.AutoResize == true ||
                                                _appSettings.Connection.AutoMaximizeWindow == true;
@@ -3054,7 +3168,7 @@ public partial class FormRdpClient : Form
     {
         HideConnectingMessage();
         if (_automaticReconnectActive && _automaticReconnectAttemptInProgress)
-            _reconnectDialog?.ShowConnecting(_automaticReconnectAttempts);
+            _reconnectDialog?.CloseFromOwner();
         panelStartup.Visible = false;
         panelRdp.Visible = true;
         panelRdp.BringToFront();
@@ -3098,6 +3212,7 @@ public partial class FormRdpClient : Form
 
     private void RdpService_LoginCompleted(object? sender, EventArgs e)
     {
+        _appSettings.Connection.NativeFallback?.CancelIfPending();
         if (_previewOnly)
             return;
 
@@ -3105,7 +3220,10 @@ public partial class FormRdpClient : Form
         _reconnectFullScreenMultiMonitor = _fullScreenMultiMonitor;
         StopAutomaticReconnect();
 
-        RecentConnectionsService.AddOrUpdate(_appSettings.Connection, markConnected: true);
+        // File/proxy preferences and broker tickets belong to this session,
+        // not to a saved device with the same endpoint.
+        if (_appSettings.CanAutoSaveDeviceProfile)
+            RecentConnectionsService.AddOrUpdate(_appSettings.Connection, markConnected: true);
         _managementWindow?._connectionLibraryPanel?.Reload();
     }
 
@@ -3143,6 +3261,7 @@ public partial class FormRdpClient : Form
 
         if (_isSessionWindow && !_previewOnly && !_sessionClosing && !e.IsIntentionalDisconnect)
         {
+            if (TrySwitchToNativeAfterFailure()) return;
             _reconnectFullScreen = e.WasFullScreen;
             _reconnectFullScreenMultiMonitor = e.WasMultiMonitor;
             if (_automaticReconnectActive)
@@ -3409,6 +3528,7 @@ public partial class FormRdpClient : Form
         StopAutomaticReconnect();
         if (_isSessionWindow)
         {
+            _appSettings.Connection.NativeFallback?.CancelIfPending();
             // Release the native RDP session before the form handle is torn
             // down. Relying only on WinForms' later Dispose leaves the
             // ActiveX/COM buffers attached to the long-lived console for a

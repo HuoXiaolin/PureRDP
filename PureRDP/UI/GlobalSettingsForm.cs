@@ -54,6 +54,7 @@ internal sealed class GlobalSettingsForm : Form
         AddPage(navigation, new DeviceMonitoringSettingsPage(settings.Monitoring));
         AddPage(navigation, new ConnectionLogPage());
         AddPage(navigation, new DataStorageSettingsPage());
+        AddPage(navigation, new FileOpeningSettingsPage(settings.RdpProxy));
         AddPage(navigation, new AboutSettingsPage());
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 16, 24, 16), ColumnCount = 5, RowCount = 1 };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -96,6 +97,7 @@ internal sealed class GlobalSettingsForm : Form
             StartupSettingsPage => 570,
             AboutSettingsPage => 570,
             DataStorageSettingsPage => 590,
+            FileOpeningSettingsPage => 760,
             _ => 460,
         });
         page.Visible = false;
@@ -144,6 +146,7 @@ internal sealed class GlobalSettingsForm : Form
             return;
         }
         SavedSettings = draft;
+        foreach (var page in _pages.OfType<FileOpeningSettingsPage>()) page.LoadFrom(draft);
         SettingsSaved?.Invoke(this, EventArgs.Empty);
         foreach (var page in _pages.OfType<StartupSettingsPage>())
         {
@@ -229,6 +232,7 @@ internal sealed class WindowSettingsPage : SettingsPage
     private readonly RadioButton _tile;
     private readonly ComboBox _controlBarPosition;
     private readonly CheckBox _controlBarAutoHide;
+    private readonly CheckBox _roundedCorners;
     public override string Title => "连接与窗口";
     public WindowSettingsPage(GlobalWindowPreferences preferences)
     {
@@ -243,7 +247,7 @@ internal sealed class WindowSettingsPage : SettingsPage
         rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 292));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 338));
         rows.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         rows.Controls.Add(new Label
         {
@@ -266,12 +270,12 @@ internal sealed class WindowSettingsPage : SettingsPage
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 6,
+            RowCount = 7,
             Margin = Padding.Empty,
         };
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (var height in new[] { 32, 38, 38, 48, 48, 56 })
+        foreach (var height in new[] { 32, 38, 38, 48, 48, 44, 56 })
             form.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
 
         var layoutTitle = new Label
@@ -332,6 +336,11 @@ internal sealed class WindowSettingsPage : SettingsPage
         };
         form.Controls.Add(FieldLabel("控制栏显示"), 0, 4);
         form.Controls.Add(_controlBarAutoHide, 1, 4);
+        _roundedCorners = new CheckBox { Text = "开启 16 像素圆角", AutoSize = true,
+            Name = "RoundedConnectionCorners", Checked = preferences.RoundedConnectionCorners,
+            Margin = new Padding(0, 12, 0, 0), ForeColor = UiDesignTokens.TextPrimary };
+        form.Controls.Add(FieldLabel("连接窗口圆角"), 0, 5);
+        form.Controls.Add(_roundedCorners, 1, 5);
 
         var note = new Label
         {
@@ -340,7 +349,7 @@ internal sealed class WindowSettingsPage : SettingsPage
             ForeColor = UiDesignTokens.TextMuted,
             Padding = new Padding(0, 8, 0, 0),
         };
-        form.Controls.Add(note, 0, 5);
+        form.Controls.Add(note, 0, 6);
         form.SetColumnSpan(note, 2);
         card.Controls.Add(form);
         rows.Controls.Add(card, 0, 2);
@@ -351,6 +360,7 @@ internal sealed class WindowSettingsPage : SettingsPage
         settings.Windows.AutoTileSessions = _tile.Checked;
         settings.Windows.ControlBarDock = GetComboBoxValue(_controlBarPosition);
         settings.Windows.ControlBarAutoHide = _controlBarAutoHide.Checked;
+        settings.Windows.RoundedConnectionCorners = _roundedCorners.Checked;
     }
     public override void LoadFrom(GlobalSettings settings)
     {
@@ -358,6 +368,7 @@ internal sealed class WindowSettingsPage : SettingsPage
         _tile.Checked = settings.Windows.AutoTileSessions;
         SetComboBoxValue(_controlBarPosition, settings.Windows.ControlBarDock);
         _controlBarAutoHide.Checked = settings.Windows.ControlBarAutoHide;
+        _roundedCorners.Checked = settings.Windows.RoundedConnectionCorners;
     }
 
     private static Label FieldLabel(string text) => new()

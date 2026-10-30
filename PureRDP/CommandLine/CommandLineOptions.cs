@@ -7,6 +7,7 @@ using Mono.Options;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
@@ -31,6 +32,8 @@ internal class CommandLineOptions
     {
         var options = new CommandLineOptions();
         var settings = new ApplicationSettings();
+        var proxyRequest = args.Contains("--proxy-connection", StringComparer.Ordinal);
+        args = args.Where(arg => arg != "--proxy-connection").ToArray();
 
         try
         {
@@ -53,6 +56,18 @@ internal class CommandLineOptions
             }
 
             settings.Connection.MergeFrom(ConnectionSettings.Default);
+            settings.IsExternalConnection = (proxyRequest || !string.IsNullOrEmpty(settings.RdpFilePath)) &&
+                !RecentConnectionsService.IsSavedConnectionFile(settings.RdpFilePath);
+            if (settings.IsExternalConnection)
+                RdpProxySettingsService.Apply(settings.Connection, GlobalSettingsService.Load().RdpProxy);
+
+            if (settings.IsExternalConnection && !args.Any(argument =>
+                argument.StartsWith("--password", StringComparison.OrdinalIgnoreCase) ||
+                argument.StartsWith("--username", StringComparison.OrdinalIgnoreCase) ||
+                argument.StartsWith("--user=", StringComparison.OrdinalIgnoreCase) ||
+                argument.StartsWith("--domain", StringComparison.OrdinalIgnoreCase) ||
+                argument.StartsWith("-u", StringComparison.Ordinal) || argument.StartsWith("-d", StringComparison.Ordinal)))
+                settings.Connection.NativeFallback = NativeRdpFallback.Capture(settings, args);
 
             return settings;
         }
@@ -109,6 +124,8 @@ internal class CommandLineOptions
         var optionSet = new OptionSet
         {
             // Connection options
+            { "administrative-session", "连接管理会话。", v => settings.Connection.AdministrativeSession = v != null },
+            { "prompt-for-credentials", "连接时提示输入凭据。", v => settings.Connection.PromptForCredentials = v != null },
             { "h|host|hostname=", "远程计算机名称或 IP 地址。可使用 hostname:port、IPv4:port、[IPv6]:port。",
                 v => settings.Connection.Hostname = v },
             { "d|domain=", "用于身份验证的域名。",

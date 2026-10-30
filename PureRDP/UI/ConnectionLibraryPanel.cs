@@ -30,6 +30,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
     private readonly HashSet<string> _openPreviewKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Timer _qualityRefreshTimer = new() { Interval = 1000 };
     private readonly ModernButton _refreshButton;
+    private readonly ModernButton _openRdpButton;
     private ConnectionLibraryViewMode _viewMode = ConnectionLibraryViewMode.Cards;
     private ConnectionCardControl? _draggedCard;
     private bool _suppressViewModeEvent;
@@ -170,6 +171,13 @@ internal sealed class ConnectionLibraryPanel : UserControl
             TabIndex = 2,
         };
         addButton.Click += (_, _) => NewConnectionRequested?.Invoke();
+        _openRdpButton = new ModernButton
+        {
+            Text = "打开 .rdp", Name = "OpenRdpFileButton", AccessibleName = "打开 RDP 连接文件",
+            Width = 112, Height = 40, Font = new Font("Microsoft YaHei UI", 9F),
+            Kind = ModernButtonKind.Secondary, TabIndex = 3,
+        };
+        _openRdpButton.Click += (_, _) => OpenRdpFileRequested?.Invoke();
         var globalButton = new LinkLabel
         {
             Text = "全局设置", AccessibleName = "全局设置",
@@ -217,16 +225,22 @@ internal sealed class ConnectionLibraryPanel : UserControl
             globalButton.SetBounds(Math.Max(24, right - 104), 24, 104, 36);
             _refreshButton.SetBounds(Math.Max(24, right - 104), 70, 104, 36);
             var actionsY = Math.Max(130, _countLabel.Bottom + 12);
-            var compact = header.ClientSize.Width < 820;
+            var compact = header.ClientSize.Width < 1100;
+            var narrow = header.ClientSize.Width < 620;
             var switchY = compact ? actionsY + 50 : actionsY;
-            header.Height = switchY + 58;
+            var openY = narrow ? switchY + 50 : switchY;
+            header.Height = openY + 58;
             addButton.SetBounds(right - addButton.Width, switchY, addButton.Width, 40);
-            var searchWidth = compact ? Math.Max(120, right - 24) : Math.Min(370, Math.Max(120, right - 460));
+            viewSwitcher.Width = Math.Min(282, Math.Max(150, addButton.Left - left - 10));
+            for (var index = 0; index < _viewButtons.Count; index++)
+                _viewButtons[index].Width = (viewSwitcher.Width - 8) / 3;
+            viewSwitcher.Location = new Point(Math.Max(left,
+                addButton.Left - 10 - viewSwitcher.Width), switchY);
+            _openRdpButton.SetBounds(narrow ? left : viewSwitcher.Left - 122, openY, 112, 40);
+            var searchWidth = compact ? Math.Max(120, right - left) : Math.Min(370, Math.Max(120, _openRdpButton.Left - left - 12));
             _searchShell.SetBounds(left, actionsY, searchWidth, 40);
             _searchBox.SetBounds(14, Math.Max(4, (40 - _searchBox.PreferredHeight) / 2),
                 Math.Max(80, searchWidth - 28), _searchBox.PreferredHeight);
-            viewSwitcher.Location = new Point(Math.Max(24,
-                right - addButton.Width - 10 - viewSwitcher.Width), switchY);
             _countLabel.Visible = header.Width > 520;
         }
 
@@ -235,6 +249,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
         header.Controls.Add(_searchShell);
         header.Controls.Add(_viewModeComboBox);
         header.Controls.Add(addButton);
+        header.Controls.Add(_openRdpButton);
         header.Controls.Add(viewSwitcher);
         header.Controls.Add(logoPicture);
         header.Controls.Add(globalButton);
@@ -342,6 +357,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
     public event Action<ConnectionSettings>? EditRequested;
     public event Action<ConnectionSettings>? DeleteRequested;
     public event Action? NewConnectionRequested;
+    public event Action? OpenRdpFileRequested;
     public event Action? GlobalSettingsRequested;
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal Func<ConnectionSettings, Form?>? PreviewSourceProvider { get; set; }

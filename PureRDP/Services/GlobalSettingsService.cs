@@ -19,6 +19,8 @@ internal static class GlobalSettingsService
                 settings.Previews ??= new();
                 settings.Monitoring ??= new();
                 settings.Shortcuts ??= new();
+                settings.RdpProxy ??= new();
+                settings.RdpProxy.Connection = RdpProxySettingsService.Sanitize(settings.RdpProxy.Connection);
                 RemoveDeletedShortcut(settings);
                 // Alt+C was the historical built-in console shortcut. Treat
                 // that untouched historical default as the new default while
@@ -44,6 +46,7 @@ internal static class GlobalSettingsService
     {
         try
         {
+            settings = settings.Clone();
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             var temp = SettingsPath + ".tmp";
             File.WriteAllText(temp, JsonSerializer.Serialize(settings, Options));
@@ -89,6 +92,8 @@ internal static class GlobalSettingsService
             settings.Previews ??= new();
             settings.Monitoring ??= new();
             settings.Shortcuts ??= new();
+            settings.RdpProxy ??= new();
+            settings.RdpProxy.Connection = RdpProxySettingsService.Sanitize(settings.RdpProxy.Connection);
             RemoveDeletedShortcut(settings);
             settings.Monitoring.AvailabilityScanIntervalSeconds =
                 NormalizeScanInterval(settings.Monitoring.AvailabilityScanIntervalSeconds);

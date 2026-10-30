@@ -65,6 +65,33 @@ internal static class RdpFileService
         foreach (var setting in connectionSettings)
             setting.Property.SetValue(settings, setting.Value, null);
 
+        // Some assistants keep the port in the standard separate field.
+        // Preserve an explicit full-address port; otherwise fold it into the
+        // in-memory endpoint used by the existing client and validation path.
+        var serverPort = rdpProperties.LastOrDefault(property => property != null &&
+            property.Name.Equals("server port", StringComparison.OrdinalIgnoreCase) &&
+            property.Type.Equals("i", StringComparison.OrdinalIgnoreCase))?.Value;
+        if (int.TryParse(serverPort, out var importedPort) && importedPort is > 0 and <= 65535 &&
+            !string.IsNullOrWhiteSpace(settings.Hostname) &&
+            (!settings.Hostname.Contains(':') || settings.Hostname.EndsWith(']')))
+            settings.Hostname += ":" + importedPort;
+
+        settings.LoadBalanceInfo = rdpProperties.LastOrDefault(property =>
+            property != null && property.Name.Equals("loadbalanceinfo", StringComparison.OrdinalIgnoreCase) &&
+            property.Type.Equals("s", StringComparison.OrdinalIgnoreCase))?.Value;
+        settings.EncryptedPassword51 = rdpProperties.LastOrDefault(property =>
+            property != null && property.Name.Equals("password 51", StringComparison.OrdinalIgnoreCase) &&
+            property.Type.Equals("b", StringComparison.OrdinalIgnoreCase))?.Value;
+        settings.AlternateShell = rdpProperties.LastOrDefault(property =>
+            property != null && property.Name.Equals("alternate shell", StringComparison.OrdinalIgnoreCase) &&
+            property.Type.Equals("s", StringComparison.OrdinalIgnoreCase))?.Value;
+        settings.ShellWorkingDirectory = rdpProperties.LastOrDefault(property =>
+            property != null && property.Name.Equals("shell working directory", StringComparison.OrdinalIgnoreCase) &&
+            property.Type.Equals("s", StringComparison.OrdinalIgnoreCase))?.Value;
+        if (!string.IsNullOrWhiteSpace(settings.EncryptedPassword51) || !string.IsNullOrWhiteSpace(settings.LoadBalanceInfo) ||
+            !string.IsNullOrWhiteSpace(settings.AlternateShell))
+            settings.PreserveImportedDesktop = true;
+
         var lastWriteTime = File.GetLastWriteTimeUtc(filePath);
         settings.LastConnected = lastWriteTime <= DateTime.UnixEpoch
             ? default
@@ -118,6 +145,11 @@ internal static class RdpFileService
             else
                 existingRdpProperties[rdpProperty.Name] = rdpProperty;
 
+        // Updating an existing export must not preserve an earlier imported
+        // password or session ticket as an unrecognized RDP property.
+        foreach (var secret in new[] { "password", "password 51", "loadbalanceinfo", "alternate shell", "shell working directory" })
+            existingRdpProperties.Remove(secret);
+
         var rdpLines = existingRdpProperties.Values
             .Select(p => $"{p.Name}:{p.Type}:{p.Value}")
             .ToArray();
@@ -157,7 +189,7 @@ internal static class RdpFileService
         return RdpPropertyType.STRING;
     }
 
-    private static string[] ReadRdpFileLines(string filePath)
+    internal static string[] ReadRdpFileLines(string filePath)
     {
         var rdpFileLines = File.ReadAllLines(filePath, Encoding.Unicode);
         if (IsValidRdp(rdpFileLines))
@@ -188,7 +220,10 @@ internal static class RdpFileService
 
         var propertyName = matches[0].Trim();
         var propertyType = matches[1].Trim();
-        var propertyValue = matches[2].Trim();
+        var propertyValue = propertyName.Equals("loadbalanceinfo", StringComparison.OrdinalIgnoreCase) ||
+            propertyName.Equals("alternate shell", StringComparison.OrdinalIgnoreCase) ||
+            propertyName.Equals("shell working directory", StringComparison.OrdinalIgnoreCase)
+            ? matches[2] : matches[2].Trim();
 
         return new RdpProperty(propertyName, propertyType, propertyValue);
     }

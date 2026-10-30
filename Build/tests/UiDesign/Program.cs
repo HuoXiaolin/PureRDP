@@ -37,6 +37,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        TestDeviceIsolation();
         Directory.CreateDirectory(Path.Combine("outputs", "ui-review"));
         foreach (var entry in new[] {
             ("ConnectionCardControl", "PreviewEnabled"), ("ConnectionCardControl", "PreviewSource"),
@@ -57,12 +58,51 @@ internal static class Program
         var settings = New("Configuration.GlobalSettings");
         using var global = (Form)New("UI.GlobalSettingsForm", settings);
         var pages = (IList)Field(global, "_pages");
-        Check(pages.Count == 8, "Global settings must expose all eight pages.");
+        Check(pages.Count == 9, "Global settings must expose all nine pages including file opening.");
         foreach (Control page in pages)
         {
             global.GetType().GetMethod("SelectPage", Members)!.Invoke(global, new object[] { page });
             Render(global, page.GetType().Name);
         }
+        var fileOpening = pages.Cast<Control>().Single(p => p.GetType().Name == "FileOpeningSettingsPage");
+        global.GetType().GetMethod("SelectPage", Members)!.Invoke(global, new object[] { fileOpening });
+        var proxyBadge = Children(fileOpening).OfType<Label>().Single(label => label.Name == "MstscProxyState");
+        foreach (var enabled in new[] { false, true })
+        {
+            fileOpening.GetType().GetMethod("DisplayProxyState", Members)!.Invoke(fileOpening, new object[] { enabled });
+            Check(proxyBadge.Visible && proxyBadge.Text.Contains(enabled ? "已开启" : "未开启"),
+                "The proxy on/off state must be explicitly visible beside its actions.");
+            Check(!enabled || proxyBadge.BackColor == Color.FromArgb(37, 124, 75) && proxyBadge.ForeColor == Color.White,
+                "Enabled state must have a high contrast green badge, not depend on a footer message.");
+            Render(global, enabled ? "ProxyEnabled" : "ProxyDisabled");
+        }
+        var commonCheck = Children(fileOpening).OfType<CheckBox>().Single(item => item.Name == "UseRdpCommonSettings");
+        var commonBadge = Children(fileOpening).OfType<Label>().Single(label => label.Name == "RdpCommonState");
+        commonCheck.Checked = true;
+        Check(commonBadge.Text == "待保存：启用", "An unsaved template switch must not claim it is already active.");
+        commonCheck.Checked = false;
+        Check(commonBadge.Text == "未启用", "Reverting the checkbox must restore its actual saved state.");
+        var nativeCheck = Children(fileOpening).OfType<CheckBox>().Single(item => item.Name == "PreferNativeRdpClient");
+        nativeCheck.Checked = true;
+        Check(!commonCheck.Enabled && commonBadge.Text == "原生连接不应用",
+            "Native preference must clearly disable settings which cannot affect the native client.");
+        var preferenceDraft = New("Configuration.GlobalSettings");
+        fileOpening.GetType().GetMethod("ApplyTo", Members)!.Invoke(fileOpening, new[] { preferenceDraft });
+        var proxyPreference = preferenceDraft.GetType().GetProperty("RdpProxy")!.GetValue(preferenceDraft)!;
+        Check((bool)proxyPreference.GetType().GetProperty("PreferNativeClient")!.GetValue(proxyPreference)!,
+            "The native compatibility choice must be included in the settings draft without writing actual preferences.");
+        Render(global, "NativeCompatibilityEnabled");
+        nativeCheck.Checked = false;
+        Check(commonCheck.Enabled && commonBadge.Text == "未启用", "Returning to automatic routing must restore the common-setting controls.");
+        Check(Children(fileOpening).OfType<Button>().Any(b => b.Name == "EnableMstscProxy") &&
+            Children(fileOpening).OfType<Button>().Any(b => b.Name == "RestoreMstscProxy"),
+            "Proxy settings must expose enable and recovery without invoking system registration in tests.");
+        var windowPage = pages.Cast<Control>().Single(p => p.GetType().Name == "WindowSettingsPage");
+        Check(Children(windowPage).OfType<CheckBox>().Single(c => c.Name == "RoundedConnectionCorners").Checked,
+            "Rounded connection corners must be enabled by default.");
+        Check(Children(fileOpening).OfType<Button>().Any(b => b.Name == "RegisterRdpAssociation") &&
+            Children(fileOpening).OfType<Button>().Any(b => b.Name == "ChooseDefaultRdpApp"),
+            "File opening settings must expose registration and Windows default-app selection without activating them in tests.");
         var data = pages.Cast<Control>().Single(p => p.GetType().Name == "DataStorageSettingsPage");
         var path = Children(data).OfType<TextBox>().Single(t => t.Name == "PrimaryDataDirectory");
         Check(path.ReadOnly, "Data directory must be selectable but read-only.");
@@ -77,6 +117,14 @@ internal static class Program
         Render(global, "GlobalCompact");
 
         var application = New("Configuration.ApplicationSettings");
+        using (var commonEditor = (Form)New("UI.FormSettings", application, null, Size.Empty, true))
+        {
+            Render(commonEditor, "RdpCommonSettings");
+            Check(!((Control)Field(commonEditor, "grpConnection")).Visible && !((Control)Field(commonEditor, "btnConnect")).Visible,
+                "Common settings must hide device identity and connection actions.");
+            commonEditor.GetType().GetMethod("CompleteSettings", Members)!.Invoke(commonEditor, new object[] { false });
+            Check(commonEditor.DialogResult == DialogResult.OK, "Common settings must save a target-free draft without device or credential writes.");
+        }
         using var device = (Form)New("UI.FormSettings", application, null, new Size(1920, 1080));
         Render(device, "DeviceSettings");
         Check(device.FormBorderStyle == FormBorderStyle.Sizable, "Device settings must support resizing.");
@@ -159,8 +207,24 @@ internal static class Program
         ((Control)Field(device, "lbCredentialSave")).Visible = true;
         ((Control)Field(device, "lbCredentialRemove")).Visible = true;
         Render(device, "DeviceSettingsFilled");
-        using var reconnect = (Form)New("UI.RdpReconnectDialog", "示例设备");
-        Render(reconnect, "Reconnect");
+        using var reconnect = (Control)New("UI.RdpReconnectDialog", "示例设备");
+        using (var retryHost = new Form { ClientSize = new Size(800, 600) })
+        {
+            retryHost.Controls.Add(reconnect);
+            Render(retryHost, "ReconnectHost");
+            reconnect.GetType().GetMethod("WaitForRetry", Members)!.Invoke(reconnect, new object[] { 5, 32, "暂时无法连接远程计算机" });
+            Check(!(reconnect is Form) && reconnect.Parent == retryHost && reconnect.Dock == DockStyle.Fill,
+                "Reconnect must remain inside the current session, with no top-level dialog.");
+            // Let the staggered crystal animation emerge before rendering.
+            var animationWatch = System.Diagnostics.Stopwatch.StartNew();
+            while (animationWatch.ElapsedMilliseconds < 900) { Application.DoEvents(); Thread.Sleep(10); }
+            Render(reconnect, "Reconnect");
+            retryHost.ClientSize = new Size(420, 320);
+            Application.DoEvents();
+            Check(reconnect.Controls.Cast<Control>().All(item => reconnect.ClientRectangle.Contains(item.Bounds)),
+                "Reconnect controls must fit a small session window.");
+            Render(reconnect, "ReconnectSmall");
+        }
         using (var loadingHost = (Form)New("UI.FormRdpClient", Array.Empty<string>(), true, null))
         {
             var shown = loadingHost.GetType().GetMethod("FormRdpClient_Shown", Members)!;
@@ -229,6 +293,26 @@ internal static class Program
         ((IList)Field(library, "_connections")).Clear();
         library.GetType().GetMethod("RenderConnections", Members)!.Invoke(library, null);
         Render(canvas, "ConsoleEmpty");
+        var fileRequests = 0;
+        library.GetType().GetEvent("OpenRdpFileRequested")!.AddEventHandler(library, (Action)(() => fileRequests++));
+        var openFileButton = (Button)Field(library, "_openRdpButton");
+        openFileButton.PerformClick();
+        Check(fileRequests == 1, "Open RDP button must route a single file-open request, not start a connection directly.");
+        foreach (var headerWidth in new[] { 420, 640, 1080, 1280 })
+        {
+            canvas.ClientSize = new Size(headerWidth, 720);
+            Application.DoEvents();
+            var toolbar = openFileButton.Parent!;
+            Check(openFileButton.Visible && openFileButton.Left >= 0 && openFileButton.Right <= toolbar.ClientSize.Width &&
+                openFileButton.Bottom <= toolbar.ClientSize.Height,
+                "Open RDP entry must remain inside the toolbar at width " + headerWidth);
+            foreach (Control sibling in toolbar.Controls)
+                if (sibling.Visible && sibling != openFileButton)
+                    Check(!sibling.Bounds.IntersectsWith(openFileButton.Bounds),
+                        "Open RDP entry must not overlap other header controls at width " + headerWidth);
+            Render(canvas, "OpenRdpToolbar-" + headerWidth);
+        }
+        canvas.ClientSize = new Size(1080, 720);
         var connection = New("Configuration.ConnectionSettings");
         connection.GetType().GetProperty("DisplayName")!.SetValue(connection, "工程工作站");
         connection.GetType().GetProperty("Hostname")!.SetValue(connection, "192.0.2.18:3389");
@@ -383,5 +467,66 @@ internal static class Program
         static double Channel(byte b) { var c = b / 255d; return c <= .04045 ? c / 12.92 : Math.Pow((c + .055) / 1.055, 2.4); }
         static double L(Color c) => .2126 * Channel(c.R) + .7152 * Channel(c.G) + .0722 * Channel(c.B);
         var x = L(a); var y = L(b); return (Math.Max(x, y) + .05) / (Math.Min(x, y) + .05);
+    }
+
+    private static void TestDeviceIsolation()
+    {
+        const BindingFlags statics = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+        var applicationType = App.GetType("PureRDP.Configuration.ApplicationSettings")!;
+        var profileType = App.GetType("PureRDP.Configuration.ConnectionSettings")!;
+        var commonType = App.GetType("PureRDP.Configuration.GlobalRdpProxyPreferences")!;
+        var proxyService = App.GetType("PureRDP.Services.RdpProxySettingsService")!;
+        var fileService = App.GetType("PureRDP.Services.RdpFileService")!;
+        var appA = Activator.CreateInstance(applicationType, true)!;
+        var appB = Activator.CreateInstance(applicationType, true)!;
+        var a = applicationType.GetProperty("Connection")!.GetValue(appA)!;
+        var b = applicationType.GetProperty("Connection")!.GetValue(appB)!;
+        profileType.GetProperty("Hostname")!.SetValue(a, "device-a.example.invalid");
+        profileType.GetProperty("Hostname")!.SetValue(b, "device-b.example.invalid");
+        profileType.GetProperty("Width")!.SetValue(a, 1280);
+        profileType.GetProperty("Height")!.SetValue(a, 720);
+        profileType.GetProperty("Width")!.SetValue(b, 1600);
+        profileType.GetProperty("Height")!.SetValue(b, 1000);
+        var directory = Path.Combine("outputs", "ci-tests", "device-isolation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var pathA = Path.Combine(directory, "a.rdp");
+        var pathB = Path.Combine(directory, "b.rdp");
+        try
+        {
+            fileService.GetMethod("SaveToFile", statics)!.Invoke(null, new[] { a, pathA });
+            fileService.GetMethod("SaveToFile", statics)!.Invoke(null, new[] { b, pathB });
+            var bytesB = File.ReadAllBytes(pathB);
+            var external = profileType.GetMethod("Clone")!.Invoke(a, null)!;
+            var preferences = Activator.CreateInstance(commonType, true)!;
+            commonType.GetProperty("UseCommonSettings")!.SetValue(preferences, true);
+            var common = profileType.GetMethod("Clone")!.Invoke(b, null)!;
+            profileType.GetProperty("Width")!.SetValue(common, 1920);
+            commonType.GetProperty("Connection")!.SetValue(preferences, common);
+            proxyService.GetMethod("Apply", statics)!.Invoke(null, new[] { external, preferences });
+            Check((int)profileType.GetProperty("Width")!.GetValue(a)! == 1280 && (int)profileType.GetProperty("Width")!.GetValue(b)! == 1600,
+                "Applying external common settings must not mutate either saved device object.");
+            applicationType.GetProperty("Connection")!.SetValue(appA, external);
+            applicationType.GetProperty("IsExternalConnection")!.SetValue(appA, true);
+            Check(!(bool)applicationType.GetProperty("CanAutoSaveDeviceProfile", Members)!.GetValue(appA)!,
+                "An external connection using common settings must never automatically overwrite its matching saved device.");
+            Check((bool)applicationType.GetProperty("CanAutoSaveDeviceProfile", Members)!.GetValue(appB)!,
+                "An ordinary device connection must retain its own persistence path.");
+            profileType.GetProperty("Width")!.SetValue(a, 1440);
+            fileService.GetMethod("SaveToFile", statics)!.Invoke(null, new[] { a, pathA });
+            var reloadedB = fileService.GetMethod("ReadFromFile", statics)!.Invoke(null, new[] { pathB })!;
+            Check(File.ReadAllBytes(pathB).SequenceEqual(bytesB) && (int)profileType.GetProperty("Width")!.GetValue(reloadedB)! == 1600,
+                "Saving device A's resolution must leave device B's file byte-for-byte unchanged.");
+            var privatePaths = (IEnumerable<string>)App.GetType("PureRDP.Services.RecentConnectionsService")!
+                .GetMethod("GetCandidateDirectories", statics)!.Invoke(null, null)!;
+            var privateFile = Path.Combine(privatePaths.First(), "fixture.rdp");
+            var isSaved = App.GetType("PureRDP.Services.RecentConnectionsService")!.GetMethod("IsSavedConnectionFile", statics)!;
+            Check((bool)isSaved.Invoke(null, new object[] { privateFile })! && !(bool)isSaved.Invoke(null, new object[] { Path.GetFullPath(pathA) })!,
+                "Saved device files and external files must have distinct preference scopes.");
+        }
+        finally
+        {
+            foreach (var path in new[] { pathA, pathB }) if (File.Exists(path)) File.Delete(path);
+            Directory.Delete(directory);
+        }
     }
 }

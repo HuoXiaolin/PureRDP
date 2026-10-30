@@ -45,13 +45,53 @@ internal class ConnectionSettings
     /// If both username and password are omitted, uses current Windows credentials (SSO).
     /// </summary>
     [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? Password { get; set; }
+
+    // Windows DPAPI password from an external .rdp/.tmp file. Keep encrypted
+    // until Connect, and never serialize it into a device or shared template.
+    [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? EncryptedPassword51 { get; set; }
+
+    [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool? PreserveImportedDesktop { get; set; }
+
+    // Imported session cookies can contain short-lived bastion tickets. Keep
+    // them in the active profile only, out of JSON and saved device mappings.
+    [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? LoadBalanceInfo { get; set; }
+
+    // An assistant's remote startup command can contain a one-time ticket.
+    // Forward it to RDP only, never execute it locally or persist it.
+    [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? AlternateShell { get; set; }
+
+    [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ShellWorkingDirectory { get; set; }
+
+    [NotMapped]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public NativeRdpFallback? NativeFallback { get; set; }
+
+    [RdpFile("negotiate security layer")]
+    public bool? NegotiateSecurityLayer { get; set; }
 
     /// <summary>
     /// Gets or sets whether to enable CredSSP (Kerberos/NTLM SSO) authentication
     /// </summary>
     [RdpFile("enablecredsspsupport", DefaultValue = "1")]
     public bool? EnableCredSsp { get; set; }
+
+    [RdpFile("administrative session")]
+    public bool? AdministrativeSession { get; set; }
+
+    [RdpFile("prompt for credentials")]
+    public bool? PromptForCredentials { get; set; }
 
     /// <summary>
     /// Gets or sets the server authentication level for certificate validation

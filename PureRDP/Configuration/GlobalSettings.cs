@@ -9,6 +9,7 @@ internal sealed class GlobalSettings
     public GlobalPreviewPreferences Previews { get; set; } = new();
     public GlobalMonitoringPreferences Monitoring { get; set; } = new();
     public GlobalShortcutPreferences Shortcuts { get; set; } = new();
+    public GlobalRdpProxyPreferences RdpProxy { get; set; } = new();
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalSettings { get; set; }
     public GlobalSettings Clone()
     {
@@ -17,6 +18,8 @@ internal sealed class GlobalSettings
         clone.Previews ??= new();
         clone.Monitoring ??= new();
         clone.Shortcuts ??= new();
+        clone.RdpProxy ??= new();
+        clone.RdpProxy.Connection = Services.RdpProxySettingsService.Sanitize(clone.RdpProxy.Connection);
         return clone;
     }
 }
@@ -27,10 +30,17 @@ internal sealed class GlobalPreviewPreferences
 }
 internal sealed class GlobalWindowPreferences
 {
+    public bool RoundedConnectionCorners { get; set; } = true;
     public bool AutoTileSessions { get; set; }
     public ControlBarPosition ControlBarDock { get; set; } = ControlBarPosition.Right;
     public bool ControlBarAutoHide { get; set; } = true;
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalSettings { get; set; }
+}
+internal sealed class GlobalRdpProxyPreferences
+{
+    public bool PreferNativeClient { get; set; }
+    public bool UseCommonSettings { get; set; }
+    public ConnectionSettings Connection { get; set; } = new();
 }
 
 internal sealed class GlobalMonitoringPreferences

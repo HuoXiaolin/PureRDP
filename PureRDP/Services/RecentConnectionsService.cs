@@ -12,6 +12,15 @@ namespace PureRDP.Services;
 /// </summary>
 internal static class RecentConnectionsService
 {
+    internal static bool IsSavedConnectionFile(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath)) return false;
+        var fullPath = Path.GetFullPath(filePath);
+        return Path.GetExtension(fullPath).Equals(".rdp", StringComparison.OrdinalIgnoreCase) &&
+            GetCandidateDirectories().Any(directory => string.Equals(Path.GetDirectoryName(fullPath),
+                Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
+    }
+
     public static List<ConnectionSettings> LoadAll()
     {
         var connections = new List<ConnectionSettings>();

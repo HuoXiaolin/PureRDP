@@ -71,6 +71,9 @@ function Copy-RelativeFile([string]$path, [string]$relative, [string]$root) {
         throw "Copied file hash mismatch: $relative"
     }
 }
+$compatibilityDoc = 'docs\RDP-compatibility.md'
+Copy-RelativeFile (Join-Path $repoRoot $compatibilityDoc) $compatibilityDoc $stageDirectory
+$stageFiles += $compatibilityDoc
 foreach ($file in $stageFiles) {
     Copy-RelativeFile (Join-Path $stageDirectory $file) $file $releaseFolder
     Copy-RelativeFile (Join-Path $stageDirectory $file) "outputs\$Version-independent-preview\$file" $sourceFolder

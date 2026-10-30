@@ -22,6 +22,45 @@ internal static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == Services.MstscProxyService.ConfigureArgument)
+        {
+            try
+            {
+                if (args[1] is not ("enable" or "disable")) throw new ArgumentException("无效的代理配置操作。");
+                Services.MstscProxyService.Configure(args[1] == "enable");
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(error.Message, "PureRDP · 代理设置未完成", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.ExitCode = 1;
+            }
+            return;
+        }
+        try
+        {
+            if (args.Length > 0 && args[0] == Services.MstscProxyService.ProxyArgument &&
+                Environment.GetEnvironmentVariable(Services.NativeMstscLauncher.GuardVariable) == "1")
+                throw new ArgumentException("原生客户端启动仍被系统重定向，已停止重复启动。请关闭 MSTSC 启动代理后重试。");
+            var launch = Services.RdpCompatibilityService.Plan(args, Services.GlobalSettingsService.Load().RdpProxy.PreferNativeClient);
+            if (launch != null)
+            {
+                Environment.ExitCode = Services.NativeMstscLauncher.Run(launch);
+                return;
+            }
+            args = Services.MstscProxyService.NormalizeArguments(args);
+        }
+        catch (ArgumentException error)
+        {
+            MessageBox.Show(error.Message, "PureRDP · MSTSC 启动代理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show("原生远程桌面兼容启动未完成。请关闭 MSTSC 启动代理后重试。", "PureRDP · 连接未打开",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Environment.ExitCode = 1;
+            return;
+        }
         using var instanceMutex = new Mutex(true, SingleInstanceMutexName, out var isPrimaryInstance);
         if (!isPrimaryInstance)
         {
@@ -41,13 +80,20 @@ internal static class Program
             forwardedArgs =>
             {
                 if (rdpClient.IsDisposed || !rdpClient.IsHandleCreated)
-                    return;
+                    return Task.CompletedTask;
+
+                var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
                 try
                 {
-                    rdpClient.BeginInvoke(new Action(() => rdpClient.HandleSingleInstanceCommand(forwardedArgs)));
+                    rdpClient.BeginInvoke(new Action(() =>
+                    {
+                        try { rdpClient.HandleSingleInstanceCommand(forwardedArgs); }
+                        finally { accepted.TrySetResult(); }
+                    }));
                 }
-                catch (InvalidOperationException) { }
+                catch (InvalidOperationException) { accepted.TrySetResult(); }
+                return accepted.Task;
             });
         Application.Run(rdpClient);
         rdpClient.Dispose();
@@ -57,11 +103,11 @@ internal static class Program
     private sealed class SingleInstanceRelay : IDisposable
     {
         private readonly string _pipeName;
-        private readonly Action<string[]> _onArguments;
+        private readonly Func<string[], Task> _onArguments;
         private readonly CancellationTokenSource _cancellation = new();
         private readonly Task _listener;
 
-        internal SingleInstanceRelay(string pipeName, Action<string[]> onArguments)
+        internal SingleInstanceRelay(string pipeName, Func<string[], Task> onArguments)
         {
             _pipeName = pipeName;
             _onArguments = onArguments;
@@ -72,10 +118,15 @@ internal static class Program
         {
             try
             {
-                using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous);
+                using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
                 client.Connect(8000);
                 using var writer = new StreamWriter(client, new UTF8Encoding(false), 4096, leaveOpen: false);
                 writer.WriteLine(JsonSerializer.Serialize(args));
+                writer.Flush();
+                // A bastion launcher may delete its temporary .rdp as soon as
+                // this child exits. Wait until the primary UI has consumed it.
+                using var reader = new StreamReader(client, Encoding.UTF8, false, 4096, leaveOpen: true);
+                reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(8)).GetAwaiter().GetResult();
             }
             catch (Exception error) when (error is TimeoutException or IOException or UnauthorizedAccessException)
             {
@@ -97,7 +148,7 @@ internal static class Program
                     {
                     using var server = new NamedPipeServerStream(
                         _pipeName,
-                        PipeDirection.In,
+                        PipeDirection.InOut,
                         1,
                         PipeTransmissionMode.Byte,
                         PipeOptions.Asynchronous);
@@ -105,13 +156,16 @@ internal static class Program
                     using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 4096, leaveOpen: false);
                     var payload = await reader.ReadLineAsync(_cancellation.Token).ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(payload))
-                        _onArguments(Array.Empty<string>());
+                        await _onArguments(Array.Empty<string>()).WaitAsync(_cancellation.Token).ConfigureAwait(false);
                     else
                     {
                         var forwardedArgs = JsonSerializer.Deserialize<string[]>(payload);
                         if (forwardedArgs != null)
-                            _onArguments(forwardedArgs);
+                            await _onArguments(forwardedArgs).WaitAsync(_cancellation.Token).ConfigureAwait(false);
                     }
+                    using var acknowledgement = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true);
+                    await acknowledgement.WriteLineAsync("accepted").ConfigureAwait(false);
+                    await acknowledgement.FlushAsync().ConfigureAwait(false);
                     }
                     catch (IOException) when (!_cancellation.IsCancellationRequested)
                     {

@@ -40,6 +40,8 @@ internal sealed class RdpClientService : IDisposable
     private bool _keyboardHookModeApplied;
     private int _displayAttempts;
     private System.Drawing.Size _displayTarget;
+    private System.Drawing.Size _lastRequestedDesktop;
+    private uint _lastRequestedScale;
     private string? _lastDisplayDiagnostic;
     private string? _connectionLogId;
     private readonly System.Windows.Forms.Timer _connectionQualityTimer = new() { Interval = 3000 };
@@ -150,6 +152,8 @@ internal sealed class RdpClientService : IDisposable
 
         _connectionSettings = connectionSettings.Clone();
 
+        _lastRequestedDesktop = System.Drawing.Size.Empty;
+        _lastRequestedScale = 0;
         SetupConnection();
 
         var fullScreen = _connectionSettings.ScreenMode == ScreenMode.FullScreen;
@@ -586,6 +590,53 @@ internal sealed class RdpClientService : IDisposable
         _rdpControl.OnNetworkStatusChanged -= OnNetworkStatusChanged;
     }
 
+    private void ApplyRoutingSettings()
+    {
+        Debug.Assert(_rdpClient is not null);
+        var cookie = _connectionSettings?.LoadBalanceInfo;
+        _rdpClient.AdvancedSettings9.LoadBalanceInfo = EncodeRoutingCookie(cookie);
+    }
+
+    // LoadBalanceInfo is a binary BSTR: ActiveX transmits its UTF-16 storage
+    // bytes verbatim. Passing an ordinary .NET string inserts NULs on the wire.
+    // Pack UTF-8 bytes into UTF-16 code units without a lossy text decoder.
+    private static string EncodeRoutingCookie(string? cookie)
+    {
+        if (string.IsNullOrWhiteSpace(cookie)) return string.Empty;
+        var body = cookie.EndsWith("\r\n", StringComparison.Ordinal) ? cookie[..^2] : cookie;
+        var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+        // The API requires an even byte count and a final CRLF. Padding is
+        // protocol whitespace, not part of the stored, original session ticket.
+        var padding = bytes.Length % 2;
+        var buffer = new byte[bytes.Length + padding + 2];
+        bytes.CopyTo(buffer, 0);
+        if (padding != 0) buffer[bytes.Length] = 0x20;
+        buffer[^2] = 13;
+        buffer[^1] = 10;
+        var packed = new char[buffer.Length / 2];
+        for (var index = 0; index < packed.Length; index++)
+            packed[index] = (char)(buffer[index * 2] | buffer[index * 2 + 1] << 8);
+        return new string(packed);
+    }
+
+    private void ApplyConnectionPassword()
+    {
+        Debug.Assert(_connectionSettings is not null && _rdpClient is not null);
+        var password = RdpFilePasswordService.GetPassword(_connectionSettings) ??
+            (string.IsNullOrWhiteSpace(_connectionSettings.LoadBalanceInfo) && string.IsNullOrWhiteSpace(_connectionSettings.AlternateShell) ? RdpCredentialService.ReadConnectionPassword(
+                _connectionSettings.Hostname, _connectionSettings.Username.CombineUsernameAndDomain(_connectionSettings.Domain)) : null);
+        if (password != null) _rdpClient.AdvancedSettings9.ClearTextPassword = password;
+    }
+
+    private void ApplyRemoteStartupSettings()
+    {
+        Debug.Assert(_connectionSettings is not null && _rdpClient is not null);
+        // These are remote RDP properties, not local process arguments. Clear
+        // them too, so a reused control cannot retain the prior session ticket.
+        _rdpClient.SecuredSettings3.StartProgram = _connectionSettings.AlternateShell ?? string.Empty;
+        _rdpClient.SecuredSettings3.WorkDir = _connectionSettings.ShellWorkingDirectory ?? string.Empty;
+    }
+
     private void ApplySettingsToRdpClient()
     {
         Debug.Assert(_connectionSettings is not null);
@@ -597,6 +648,7 @@ internal sealed class RdpClientService : IDisposable
         var (host, port) = ParseHostAndPort(_connectionSettings.Hostname);
 
         _rdpClient.Server = host;
+        ApplyRoutingSettings();
 
         if (!string.IsNullOrWhiteSpace(port))
             _rdpClient.AdvancedSettings9.RDPPort = int.Parse(port);
@@ -607,14 +659,18 @@ internal sealed class RdpClientService : IDisposable
         if (_connectionSettings.Username != null)
             _rdpClient.UserName = _connectionSettings.Username;
 
-        var password = _connectionSettings.Password ?? RdpCredentialService.ReadConnectionPassword(
-            _connectionSettings.Hostname,
-            _connectionSettings.Username.CombineUsernameAndDomain(_connectionSettings.Domain));
-        if (password != null)
-            _rdpClient.AdvancedSettings9.ClearTextPassword = password;
+        ApplyConnectionPassword();
 
         if (_connectionSettings.EnableCredSsp != null)
             _rdpClient.AdvancedSettings9.EnableCredSspSupport = _connectionSettings.EnableCredSsp.Value;
+        if (_connectionSettings.AdministrativeSession is bool administrative)
+            _rdpClient.AdvancedSettings9.ConnectToAdministerServer = administrative;
+        if (_connectionSettings.PromptForCredentials is bool prompt)
+            ((IMsRdpClientNonScriptable3)_rdpClient).PromptForCredentials = prompt;
+        if (_connectionSettings.NegotiateSecurityLayer is bool negotiate)
+            ((IMsRdpClientNonScriptable3)_rdpClient).NegotiateSecurityLayer = negotiate;
+
+        ApplyRemoteStartupSettings();
 
         if (_connectionSettings.AuthenticationLevel != null && _connectionSettings.AuthenticationLevel != AuthenticationLevel.NoRequirement)
             _rdpClient.AdvancedSettings9.AuthenticationLevel = (uint)_connectionSettings.AuthenticationLevel.Value;
@@ -835,6 +891,8 @@ internal sealed class RdpClientService : IDisposable
 
     private System.Drawing.Size GetInitialDesktopSize(ConnectionSettings settings)
     {
+        if (settings.PreserveImportedDesktop == true && settings.Width > 0 && settings.Height > 0)
+            return new System.Drawing.Size((int)GetRemoteDimension(settings.Width.Value), (int)GetRemoteDimension(settings.Height.Value));
         var form = _container.FindForm();
         var fillWindow = !_tileMode && (form?.WindowState == FormWindowState.Maximized || _fullScreen || settings.AutoMaximizeWindow == true);
         var autoSizeToContainer = !_previewMode && !_tileMode && settings.ScreenMode != ScreenMode.FullScreen &&
@@ -865,6 +923,11 @@ internal sealed class RdpClientService : IDisposable
         RefreshPictureLayout();
 
         var form = _container.FindForm();
+        if (_connectionSettings.PreserveImportedDesktop == true)
+        {
+            _displayTimer.Stop();
+            return;
+        }
         var disconnected = !_loginComplete || _rdpClient.Connected != 1;
         var useAllMonitors = _connectionSettings.UseAllMonitors == true;
         if (disconnected || useAllMonitors)
@@ -907,11 +970,16 @@ internal sealed class RdpClientService : IDisposable
             updatedHeight = GetRemoteDimension(_connectionSettings.Height ?? _viewDesktop.Height);
         }
         updatedScaleFactor = Math.Max(100u, updatedScaleFactor);
-        // A display update is asynchronous. Lay out against the requested
-        // desktop size so the picture already fits the new window while the
-        // server applies the update. SmartSizing keeps the old frame complete
-        // during that transition as well.
-        LayoutPicture(updatedWidth, updatedHeight);
+        // Keep fitting the actual remote desktop until its size notification
+        // arrives. Alternating actual/requested aspect ratios repaints and
+        // crops older broker-hosted sessions which reject dynamic resizing.
+        RefreshPictureLayout();
+
+        if (!TryBeginDisplayRequest(updatedWidth, updatedHeight, updatedScaleFactor))
+        {
+            _displayTimer.Stop();
+            return;
+        }
 
         if (currentWidth == updatedWidth && currentHeight == updatedHeight && currentScaleFactor == updatedScaleFactor &&
             _rdpClient.HorizontalScrollBarVisible == 0 && _rdpClient.VerticalScrollBarVisible == 0)
@@ -935,13 +1003,22 @@ internal sealed class RdpClientService : IDisposable
                 rdpClient10.UpdateSessionDisplaySettings(updatedWidth, updatedHeight, physicalWidth, physicalHeight, 0, updatedScaleFactor, DEVICE_SCALE_FACTOR);
                 ReportDisplay($"requested={updatedWidth}x{updatedHeight}; remote={_rdpClient.DesktopWidth}x{_rdpClient.DesktopHeight}; scroll={_rdpClient.HorizontalScrollBarVisible},{_rdpClient.VerticalScrollBarVisible}");
             }
-            else // Fallback: RDP 8
-                _rdpClient.Reconnect(updatedWidth, updatedHeight);
+            else
+                ReportDisplay("dynamic-display unavailable; keeping remote desktop and local picture scaling");
         }
         catch (COMException exception)
         {
             ReportDisplay($"requested={updatedWidth}x{updatedHeight}; HRESULT=0x{exception.HResult:X8}; {exception.Message}");
         }
+    }
+
+    private bool TryBeginDisplayRequest(uint width, uint height, uint scale)
+    {
+        var requested = new System.Drawing.Size((int)width, (int)height);
+        if (_lastRequestedDesktop == requested && _lastRequestedScale == scale) return false;
+        _lastRequestedDesktop = requested;
+        _lastRequestedScale = scale;
+        return true;
     }
 
     private void ReportDisplay(string message)
@@ -1038,6 +1115,7 @@ internal sealed class RdpClientService : IDisposable
     {
         if (e.width <= 0 || e.height <= 0) return;
         _viewDesktop = new System.Drawing.Size(e.width, e.height);
+        ReportDisplay($"remote-size={e.width}x{e.height}; container={_container.ClientSize.Width}x{_container.ClientSize.Height}");
         // The server can change the Winlogon surface before OnLoginComplete.
         // Track its actual geometry instead of only the requested profile size.
         if (!_displayUpdatesSuspended)

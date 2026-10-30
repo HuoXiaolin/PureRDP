@@ -38,9 +38,14 @@ public partial class FormSettings : Form
 
     internal ApplicationSettings UpdatedSettings { get; private set; }
     internal bool ConnectRequested { get; private set; }
+    private readonly bool _commonSettings;
 
     internal FormSettings(ApplicationSettings settings, Icon? icon, Size currentRdpSize)
+        : this(settings, icon, currentRdpSize, false) { }
+
+    internal FormSettings(ApplicationSettings settings, Icon? icon, Size currentRdpSize, bool commonSettings)
     {
+        _commonSettings = commonSettings;
         ArgumentNullException.ThrowIfNull(settings);
         _currentRdpSize = currentRdpSize;
 
@@ -66,6 +71,7 @@ public partial class FormSettings : Form
                 Connection = settings.Connection.Clone(), Window = settings.Window,
                 NoAutoConnect = settings.NoAutoConnect, NoCloseOnDisconnect = settings.NoCloseOnDisconnect,
                 RdpFilePath = settings.RdpFilePath, EditRdpFile = settings.EditRdpFile,
+                IsExternalConnection = settings.IsExternalConnection,
             };
             btnConnect.DialogResult = DialogResult.None;
             btnConnect.Click += (_, _) => CompleteSettings(connect: true);
@@ -81,6 +87,7 @@ public partial class FormSettings : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        if (_commonSettings) return;
         _ = QueueCredentialHintRefreshAsync();
         _ = QueueRecentConnectionsRefreshAsync();
     }
@@ -308,7 +315,12 @@ public partial class FormSettings : Form
             group.Margin = new Padding(8, 0, 8, 16);
             group.Height = Math.Max(group.Height, group.Controls.Cast<Control>().Max(control => control.Bottom) + 18);
         }
-        left.Controls.AddRange(new Control[] { grpConnection, grpRedirection });
+        left.Controls.AddRange(_commonSettings ? new Control[] { grpRedirection } : new Control[] { grpConnection, grpRedirection });
+        if (_commonSettings)
+        {
+            grpConnection.Visible = false;
+            grpServerAuthentication.Controls.Add(chkEnableCredSsp);
+        }
         right.Controls.AddRange(new Control[] { grpDisplay, grpExperience, grpServerAuthentication });
         left.TabIndex = 0;
         right.TabIndex = 1;
@@ -330,6 +342,12 @@ public partial class FormSettings : Form
         shell.Controls.Add(footer, 0, 2);
         Controls.Add(shell);
         shell.BringToFront();
+        if (_commonSettings)
+        {
+            ((Label)shell.GetControlFromPosition(0, 0)!).Text = ".rdp 通用连接设置";
+            btnConnect.Visible = btnSaveAs.Visible = false;
+            Text = ".rdp 通用连接设置 · PureRDP";
+        }
         var arranging = false;
         void LayoutGroups()
         {
@@ -458,19 +476,30 @@ public partial class FormSettings : Form
         }
         else if (group == grpExperience)
         {
-            var y = top + row++ * rowHeight;
-            LabelAt(lbBadgeColor, y);
-            var swatchWidth = Px(52);
-            Position(Field(tbBadgeColor), inputX, y + (rowHeight - fieldHeight) / 2,
-                inputWidth - swatchWidth - Px(12), fieldHeight);
-            Field(tbBadgeColor).TabIndex = row * 4;
-            Position(panelBadgeColor, group.Width - inset - swatchWidth,
-                y + (rowHeight - fieldHeight) / 2, swatchWidth, fieldHeight);
+            if (!_commonSettings)
+            {
+                var y = top + row++ * rowHeight;
+                LabelAt(lbBadgeColor, y);
+                var swatchWidth = Px(52);
+                Position(Field(tbBadgeColor), inputX, y + (rowHeight - fieldHeight) / 2,
+                    inputWidth - swatchWidth - Px(12), fieldHeight);
+                Field(tbBadgeColor).TabIndex = row * 4;
+                Position(panelBadgeColor, group.Width - inset - swatchWidth,
+                    y + (rowHeight - fieldHeight) / 2, swatchWidth, fieldHeight);
+            }
+            else
+            {
+                lbBadgeColor.Visible = tbBadgeColor.Visible = panelBadgeColor.Visible = false;
+                Field(tbBadgeColor).Visible = false;
+            }
             Option(_hideControlBarWindowed);
             Option(_hideControlBarFullscreen);
         }
         else if (group == grpServerAuthentication)
+        {
             Pair(lblAuthenticationLevel, cmbAuthenticationLevel);
+            if (_commonSettings) Option(chkEnableCredSsp);
+        }
         group.Height = top + row * rowHeight + Px(12);
     }
 
@@ -648,6 +677,15 @@ public partial class FormSettings : Form
         updatedConnectionSettings.Username = string.IsNullOrWhiteSpace(username) ? null : username;
         updatedConnectionSettings.Domain = string.IsNullOrWhiteSpace(domain) ? null : domain;
         updatedConnectionSettings.Password = string.IsNullOrWhiteSpace(tbPassword.Text) ? updatedConnectionSettings.Password : tbPassword.Text;
+        if (!string.IsNullOrWhiteSpace(tbPassword.Text) ||
+            !string.Equals(UpdatedSettings.Connection.Hostname, updatedConnectionSettings.Hostname, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(UpdatedSettings.Connection.Username.CombineUsernameAndDomain(UpdatedSettings.Connection.Domain),
+                updatedConnectionSettings.Username.CombineUsernameAndDomain(updatedConnectionSettings.Domain), StringComparison.OrdinalIgnoreCase))
+        {
+            updatedConnectionSettings.EncryptedPassword51 = null;
+            updatedConnectionSettings.NativeFallback?.CancelIfPending();
+            updatedConnectionSettings.NativeFallback = null;
+        }
         updatedConnectionSettings.EnableCredSsp = GetBoolValue(chkEnableCredSsp.CheckState);
 
         updatedConnectionSettings.KeyboardModeWindowed = GetComboBoxValue<KeyboardMode?>(cmbKeyboardMode);
@@ -761,6 +799,7 @@ public partial class FormSettings : Form
 
     private void UpdateSavedCredentialHints(bool refreshCredentials = false, bool fillEmptyUsername = true)
     {
+        if (_commonSettings) return;
         var hostname = cmbHostname.Text.Trim();
         if (refreshCredentials || !_credentialHintLoaded ||
             !string.Equals(_credentialHintHostname, hostname, StringComparison.OrdinalIgnoreCase))
@@ -931,6 +970,17 @@ public partial class FormSettings : Form
 
     private void CompleteSettings(bool connect)
     {
+        if (_commonSettings)
+        {
+            var profile = RdpProxySettingsService.Sanitize(GetConnectionSettingsFromUi());
+            // Validate ordinary display/resource values without requiring a
+            // target identity in this template, and never write a device.
+            profile.Hostname = "example.invalid";
+            if (!profile.IsValid()) { ShowValidationErrors(profile); return; }
+            UpdatedSettings.Connection = RdpProxySettingsService.Sanitize(profile);
+            DialogResult = DialogResult.OK;
+            return;
+        }
         if (SaveSettingsToConnectionLibrary())
         {
             ConnectRequested = connect;
@@ -987,6 +1037,7 @@ public partial class FormSettings : Form
             RecentConnectionsService.Remove(previousHostname);
 
         UpdatedSettings.Connection = connectionSettings;
+        UpdatedSettings.IsExternalConnection = false;
         UpdatedSettings.RdpFilePath = null;
         Text = "设置 - PureRDP";
         return true;
@@ -1170,6 +1221,9 @@ public partial class FormSettings : Form
             // history address. Windows keeps the selected target's saved secret.
             tbPassword.Clear();
             UpdatedSettings.Connection.Password = null;
+            UpdatedSettings.Connection.EncryptedPassword51 = null;
+            UpdatedSettings.Connection.NativeFallback?.CancelIfPending();
+            UpdatedSettings.Connection.NativeFallback = null;
             _nativeUsernamePending = true;
             _ = RefreshCredentialHintAsync(true);
         }

@@ -15,9 +15,9 @@
 
 		<!-- Local package builds increment the patch once per Beijing calendar day.
 		     Normal builds read this version; explicit release tags never auto-increment. -->
-		<Version>2.0.8</Version>
-		<FileVersion>2.0.8.0</FileVersion>
-		<LastPackageVersionDate>2026-10-27</LastPackageVersionDate>
+		<Version>2.1.0</Version>
+		<FileVersion>2.1.0.0</FileVersion>
+		<LastPackageVersionDate>2026-10-30</LastPackageVersionDate>
 		<AssemblyVersion>$(FileVersion)</AssemblyVersion>
 		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 

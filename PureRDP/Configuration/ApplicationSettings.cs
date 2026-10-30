@@ -32,6 +32,14 @@ internal class ApplicationSettings
     /// </summary>
     public string? RdpFilePath { get; set; }
 
+    // External file/proxy preferences are transient and must never replace a
+    // saved device merely because it shares the same endpoint.
+    public bool IsExternalConnection { get; set; }
+
+    internal bool CanAutoSaveDeviceProfile => !IsExternalConnection && string.IsNullOrWhiteSpace(Connection.LoadBalanceInfo) &&
+        string.IsNullOrWhiteSpace(Connection.EncryptedPassword51) && string.IsNullOrWhiteSpace(Connection.AlternateShell) &&
+        string.IsNullOrWhiteSpace(Connection.ShellWorkingDirectory);
+
     /// <summary>
     /// Opens the specified .RDP connection file for editing
     /// </summary>

@@ -98,7 +98,22 @@ internal sealed class FileOpeningSettingsPage : SettingsPage
         Note("沿用设备连接设置中的显示、缩放、本地资源、快捷键转发和身份验证选项；启用后覆盖外部连接的同类选项。" +
             "\n目标地址、用户名、密码和临时票据仍使用原始连接，不放入通用设置。设备库连接不受影响。");
         rows.Controls.Add(_message);
-        Controls.Add(rows);
+        // Reparent the existing actions: registration, UAC and save semantics stay unchanged.
+        var sections = SettingsPageDesign.Stack();
+        SettingsPageDesign.Add(sections, SettingsPageDesign.Section(".rdp 文件打开方式",
+            SettingsPageDesign.Note("双击文件时使用 Windows 默认应用；网页助手直接调用 mstsc.exe 时可另开下方代理。"),
+            defaultsActions));
+        SettingsPageDesign.Add(sections, SettingsPageDesign.Section("MSTSC 启动代理",
+            _proxyState, proxyActions,
+            SettingsPageDesign.Note("开启或恢复需要管理员授权，对本机所有用户生效；关闭后恢复此前设置。\n请保留当前 PureRDP.exe 路径，移动或删除程序前先关闭代理。不会替换系统文件或接管 H5 客户端。")));
+        SettingsPageDesign.Add(sections, SettingsPageDesign.Section("通用连接设置",
+            commonToggle, commonActions,
+            SettingsPageDesign.Note("显示、缩放、本地资源、快捷键转发与身份验证使用通用设置。目标地址、用户名、密码及临时票据仍来自原始连接；设备库连接不受影响。"),
+            _preferNative,
+            SettingsPageDesign.Note("默认优先 PureRDP，建立失败后切换原生；网关、RemoteApp、多显示器及不能等价实现的安全模式保留原生处理。依赖厂商专属行为时，可选择始终使用原生；原生窗口不应用通用模板。")));
+        SettingsPageDesign.Add(sections, _message);
+        rows.Dispose();
+        Controls.Add(sections);
         RefreshStatus();
     }
 

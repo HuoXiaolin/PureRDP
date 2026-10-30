@@ -35,7 +35,7 @@ internal sealed class DataStorageSettingsPage : SettingsPage
         _primaryPath.AccessibleName = "当前用户主数据目录";
         rows.Controls.Add(_primaryPath);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
-            WrapContents = true, Margin = new Padding(0, 8, 0, 16) };
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = new Padding(0, 8, 0, 16) };
         var open = new ModernButton { Text = "打开数据目录", Width = 148, Height = 36 };
         var copy = new ModernButton { Text = "复制路径", Width = 112, Height = 36 };
         var refresh = new ModernButton { Text = "刷新位置", Width = 112, Height = 36 };
@@ -62,7 +62,18 @@ internal sealed class DataStorageSettingsPage : SettingsPage
         _message = new Label { AutoSize = true, ForeColor = UiDesignTokens.Accent,
             Margin = new Padding(0, 12, 0, 0) };
         rows.Controls.Add(_message);
-        Controls.Add(rows);
+        var sections = SettingsPageDesign.Stack();
+        var cleanup = rows.Controls.OfType<Label>().First(label => label.Text.StartsWith("清理前"));
+        var dataActions = SettingsPageDesign.Actions(open, copy, refresh);
+        dataActions.AutoSize = false;
+        dataActions.Height = 38;
+        SettingsPageDesign.Add(sections, SettingsPageDesign.Section("当前用户主数据目录", _primaryPath,
+            dataActions));
+        SettingsPageDesign.Add(sections, SettingsPageDesign.Section("所有数据位置与诊断日志", _locations));
+        SettingsPageDesign.Add(sections, SettingsPageDesign.Section("清理说明", cleanup));
+        SettingsPageDesign.Add(sections, _message);
+        rows.Dispose();
+        Controls.Add(sections);
         VisibleChanged += (_, _) => { if (Visible) RefreshPaths(); };
         RefreshPaths();
     }

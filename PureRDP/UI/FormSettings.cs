@@ -281,18 +281,18 @@ public partial class FormSettings : Form
         // credentials and all connection-setting behavior.
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
-        ClientSize = new Size(1000, 780);
+        ClientSize = new Size(1080, 800);
         MinimumSize = new Size(780, 600);
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
             BackColor = UiDesignTokens.PageBackground, Margin = Padding.Empty };
         shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         shell.Controls.Add(new Label { Text = "设备连接设置", Dock = DockStyle.Fill,
             Padding = new Padding(24, 16, 0, 0), Font = new Font(UiDesignTokens.FontFamily, 16F, FontStyle.Bold),
             BackColor = UiDesignTokens.SurfaceSubtle, ForeColor = UiDesignTokens.TextPrimary }, 0, 0);
-        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(16) };
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(16, 8, 16, 12) };
         var columns = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2,
             RowCount = 1, Margin = Padding.Empty };
         columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -312,7 +312,7 @@ public partial class FormSettings : Form
         foreach (var group in new[] { grpConnection, grpRedirection, grpDisplay, grpExperience, grpServerAuthentication })
         {
             group.Anchor = AnchorStyles.Top | AnchorStyles.Left;
-            group.Margin = new Padding(8, 0, 8, 16);
+            group.Margin = new Padding(8, 0, 8, 12);
             group.Height = Math.Max(group.Height, group.Controls.Cast<Control>().Max(control => control.Bottom) + 18);
         }
         left.Controls.AddRange(_commonSettings ? new Control[] { grpRedirection } : new Control[] { grpConnection, grpRedirection });
@@ -380,10 +380,10 @@ public partial class FormSettings : Form
         var scale = DeviceDpi / 96F;
         int Px(int value) => (int)Math.Round(value * scale);
         var inset = Px(16);
-        var inputX = Px(148);
+        var inputX = Px(140);
         var inputWidth = Math.Max(Px(120), group.ClientSize.Width - inputX - inset);
         var fieldHeight = Math.Max(Px(26), cmbScreenMode.PreferredHeight);
-        var rowHeight = Math.Max(Px(32), fieldHeight + Px(6));
+        var rowHeight = Math.Max(Px(38), fieldHeight + Px(8));
         var top = Math.Max(Px(34), group.Font.Height + Px(16));
         var row = 0;
         Control Field(Control control) => control is TextBox text ? _textFields[text] : control;

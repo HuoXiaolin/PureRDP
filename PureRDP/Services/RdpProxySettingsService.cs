@@ -23,16 +23,18 @@ internal static class RdpProxySettingsService
     internal static ConnectionSettings Sanitize(ConnectionSettings? source)
     {
         var result = new ConnectionSettings();
-        if (source != null) Copy(source, result);
+        Copy(source ?? new ConnectionSettings(), result, useDefaults: true);
         return result;
     }
 
-    private static void Copy(ConnectionSettings source, ConnectionSettings target)
+    private static void Copy(ConnectionSettings source, ConnectionSettings target, bool useDefaults = false)
     {
         foreach (var name in Fields)
         {
             var property = typeof(ConnectionSettings).GetProperty(name)!;
-            property.SetValue(target, property.GetValue(source));
+            var value = property.GetValue(source);
+            if (useDefaults && value == null) value = property.GetValue(ConnectionSettings.Default);
+            property.SetValue(target, value);
         }
     }
 

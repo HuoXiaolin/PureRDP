@@ -26,7 +26,7 @@ internal sealed class GlobalSettingsForm : Form
         SuspendLayout();
         Text = "全局设置 · PureRDP";
         Icon = Properties.Resources.AppIcon;
-        Font = new Font("Microsoft YaHei UI", 10F);
+        Font = new Font("Microsoft YaHei UI", 9.5F);
         AutoScaleMode = AutoScaleMode.Dpi;
         // Give the settings surface enough room for the log tables and the
         // future settings pages without forcing dense, clipped controls.
@@ -35,16 +35,16 @@ internal sealed class GlobalSettingsForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = UiDesignTokens.PageBackground;
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 194));
+        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 176));
         shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-        var heading = new Label { Dock = DockStyle.Fill, Text = "全局设置\n管理 PureRDP 的应用偏好", Padding = new Padding(28, 16, 0, 0), Font = new Font(Font.FontFamily, 13F), ForeColor = UiDesignTokens.TextPrimary, BackColor = UiDesignTokens.HeroSky };
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+        var heading = new Label { Dock = DockStyle.Fill, Text = "PureRDP  /  全局设置", Padding = new Padding(20, 10, 0, 0), Font = new Font(Font.FontFamily, 11F, FontStyle.Bold), ForeColor = UiDesignTokens.TextPrimary, BackColor = UiDesignTokens.HeroSky };
         shell.Controls.Add(heading, 0, 0);
         shell.SetColumnSpan(heading, 2);
-        var navigation = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(12, 18, 12, 18), AutoScroll = true, BackColor = UiDesignTokens.SurfaceSoft };
-        _content = new Panel { Dock = DockStyle.Fill, Padding = new Padding(28), AutoScroll = true, BackColor = UiDesignTokens.Surface };
+        var navigation = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(8, 16, 8, 16), AutoScroll = true, BackColor = UiDesignTokens.PageBackground };
+        _content = new Panel { Dock = DockStyle.Fill, Padding = new Padding(22, 20, 20, 12), AutoScroll = false, BackColor = UiDesignTokens.Surface };
         shell.Controls.Add(navigation, 0, 1);
         shell.Controls.Add(_content, 1, 1);
         AddPage(navigation, new WindowSettingsPage(settings.Windows));
@@ -56,7 +56,8 @@ internal sealed class GlobalSettingsForm : Form
         AddPage(navigation, new DataStorageSettingsPage());
         AddPage(navigation, new FileOpeningSettingsPage(settings.RdpProxy));
         AddPage(navigation, new AboutSettingsPage());
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 16, 24, 16), ColumnCount = 5, RowCount = 1 };
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 8, 20, 8), ColumnCount = 5, RowCount = 1, BackColor = UiDesignTokens.Surface };
+        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
@@ -101,8 +102,9 @@ internal sealed class GlobalSettingsForm : Form
             _ => 460,
         });
         page.Visible = false;
+        SettingsPageDesign.Apply(page);
         _content.Controls.Add(page);
-        var button = new ModernButton { Text = page.Title, Width = 164, Height = 42, Bordered = false };
+        var button = new ModernButton { Text = page.Title, Width = 154, Height = 36, Bordered = false, Margin = new Padding(0, 0, 0, 4) };
         button.Click += (_, _) => SelectPage(page);
         page.NavigationButton = button;
         navigation.Controls.Add(button);
@@ -237,124 +239,28 @@ internal sealed class WindowSettingsPage : SettingsPage
     public WindowSettingsPage(GlobalWindowPreferences preferences)
     {
         BackColor = UiDesignTokens.Surface;
-        var rows = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(0, 0, 8, 8),
-        };
-        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 338));
-        rows.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        rows.Controls.Add(new Label
-        {
-            Text = Title,
-            Dock = DockStyle.Fill,
-            Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold),
-            ForeColor = UiDesignTokens.TextPrimary,
-            TextAlign = ContentAlignment.MiddleLeft,
-        }, 0, 0);
-        rows.Controls.Add(new Label
-        {
-            Text = "统一管理多窗口排列方式，以及控制栏的位置和显示策略。",
-            Dock = DockStyle.Fill,
-            ForeColor = UiDesignTokens.TextSecondary,
-            TextAlign = ContentAlignment.MiddleLeft,
-        }, 0, 1);
-
-        var card = new RoundedSurfacePanel { Dock = DockStyle.Fill, Padding = new Padding(20, 16, 20, 16) };
-        var form = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 7,
-            Margin = Padding.Empty,
-        };
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (var height in new[] { 32, 38, 38, 48, 48, 44, 56 })
-            form.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-
-        var layoutTitle = new Label
-        {
-            Text = "多连接查看方式",
-            Dock = DockStyle.Fill,
-            Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
-            ForeColor = UiDesignTokens.TextPrimary,
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-        form.Controls.Add(layoutTitle, 0, 0);
-        form.SetColumnSpan(layoutTitle, 2);
-
-        _independent = new RadioButton
-        {
-            Text = "每台设备独立窗口",
-            Dock = DockStyle.Fill,
-            Checked = !preferences.AutoTileSessions,
-            ForeColor = UiDesignTokens.TextPrimary,
-            Margin = new Padding(0, 4, 0, 0),
-        };
-        _tile = new RadioButton
-        {
-            Text = "自动适应宫格布局",
-            Dock = DockStyle.Fill,
-            Checked = preferences.AutoTileSessions,
-            ForeColor = UiDesignTokens.TextPrimary,
-            Margin = new Padding(0, 4, 0, 0),
-        };
-        form.Controls.Add(FieldLabel("独立窗口"), 0, 1);
-        form.Controls.Add(_independent, 1, 1);
-        form.Controls.Add(FieldLabel("宫格布局"), 0, 2);
-        form.Controls.Add(_tile, 1, 2);
-
-        _controlBarPosition = new ModernComboBox
-        {
-            Dock = DockStyle.Left,
-            Width = 230,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Font = new Font("Microsoft YaHei UI", 10F),
-            Margin = new Padding(0, 7, 0, 0),
-        };
+        var rows = SettingsPageDesign.Stack();
+        _independent = new RadioButton { Text = "每台设备独立窗口", AutoSize = true, Checked = !preferences.AutoTileSessions };
+        _tile = new RadioButton { Text = "自动适应宫格布局", AutoSize = true, Checked = preferences.AutoTileSessions };
+        _controlBarPosition = new ModernComboBox { Width = 250, DropDownStyle = ComboBoxStyle.DropDownList };
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Top, "窗口顶部（居中）"));
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Bottom, "窗口底部（居中）"));
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Left, "窗口左侧（居中）"));
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Right, "窗口右侧（居中）"));
         SetComboBoxValue(_controlBarPosition, preferences.ControlBarDock);
-        form.Controls.Add(FieldLabel("控制栏位置"), 0, 3);
-        form.Controls.Add(_controlBarPosition, 1, 3);
-
-        _controlBarAutoHide = new CheckBox
-        {
-            Text = "鼠标移开后自动隐藏",
-            AutoSize = true,
-            Checked = preferences.ControlBarAutoHide,
-            ForeColor = UiDesignTokens.TextPrimary,
-            Margin = new Padding(0, 12, 0, 0),
-        };
-        form.Controls.Add(FieldLabel("控制栏显示"), 0, 4);
-        form.Controls.Add(_controlBarAutoHide, 1, 4);
-        _roundedCorners = new CheckBox { Text = "开启 16 像素圆角", AutoSize = true,
-            Name = "RoundedConnectionCorners", Checked = preferences.RoundedConnectionCorners,
-            Margin = new Padding(0, 12, 0, 0), ForeColor = UiDesignTokens.TextPrimary };
-        form.Controls.Add(FieldLabel("连接窗口圆角"), 0, 5);
-        form.Controls.Add(_roundedCorners, 1, 5);
-
-        var note = new Label
-        {
-            Text = "关闭后控制栏会在所选位置持续显示。\n设备设置中的“隐藏控制栏”仍可单独完全隐藏控制栏。",
-            Dock = DockStyle.Fill,
-            ForeColor = UiDesignTokens.TextMuted,
-            Padding = new Padding(0, 8, 0, 0),
-        };
-        form.Controls.Add(note, 0, 6);
-        form.SetColumnSpan(note, 2);
-        card.Controls.Add(form);
-        rows.Controls.Add(card, 0, 2);
+        _controlBarAutoHide = new CheckBox { Text = "鼠标移开后自动收起控制栏", AutoSize = true, Checked = preferences.ControlBarAutoHide };
+        _roundedCorners = new CheckBox { Text = "连接窗口开启 16 像素圆角", Name = "RoundedConnectionCorners", AutoSize = true, Checked = preferences.RoundedConnectionCorners };
+        var preview = new ConnectionChromePreview(() => GetComboBoxValue(_controlBarPosition), () => _roundedCorners.Checked);
+        _controlBarPosition.SelectedIndexChanged += (_, _) => preview.Invalidate();
+        _roundedCorners.CheckedChanged += (_, _) => preview.Invalidate();
+        SettingsPageDesign.Add(rows, SettingsPageDesign.Section("控制栏",
+            SettingsPageDesign.Field("默认位置", _controlBarPosition), _controlBarAutoHide, preview));
+        SettingsPageDesign.Add(rows, SettingsPageDesign.Section("连接窗口与排列",
+            _roundedCorners, SettingsPageDesign.Actions(_independent, _tile),
+            SettingsPageDesign.Note("仅拖动控制栏九点区域可移动窗口；真全屏不能拖动。左下、右下角仍可调整普通窗口尺寸。\n设备中的“隐藏控制栏”可独立覆盖显示设置。")));
         Controls.Add(rows);
     }
+
     public override void ApplyTo(GlobalSettings settings)
     {
         settings.Windows.AutoTileSessions = _tile.Checked;
@@ -380,7 +286,7 @@ internal sealed class WindowSettingsPage : SettingsPage
     };
 
     private static ControlBarPosition GetComboBoxValue(ComboBox comboBox)
-        => comboBox.SelectedItem is PositionItem item ? item.Value : ControlBarPosition.Right;
+        => comboBox.SelectedItem is PositionItem item ? item.Value : ControlBarPosition.Top;
 
     private static void SetComboBoxValue(ComboBox comboBox, ControlBarPosition value)
     {
@@ -405,44 +311,19 @@ internal sealed class DeviceMonitoringSettingsPage : SettingsPage
     public DeviceMonitoringSettingsPage(GlobalMonitoringPreferences preferences)
     {
         BackColor = UiDesignTokens.Surface;
-        _interval = new NumericUpDown
-        {
-            Minimum = 5,
-            Maximum = 86400,
-            Increment = 5,
-            Value = Math.Clamp(preferences.AvailabilityScanIntervalSeconds, 5, 86400),
-            ThousandsSeparator = true,
-            Width = 180,
-            Font = new Font("Microsoft YaHei UI", 11F),
-        };
-        _qualityInterval = new NumericUpDown { Minimum = 1, Maximum = 86400, Width = 180,
+        _interval = new NumericUpDown { Minimum = 5, Maximum = 86400, Increment = 5, Width = 110,
+            Value = Math.Clamp(preferences.AvailabilityScanIntervalSeconds, 5, 86400), ThousandsSeparator = true };
+        _qualityInterval = new NumericUpDown { Minimum = 1, Maximum = 86400, Width = 110,
             Value = Math.Clamp(preferences.ConnectionQualityIntervalSeconds <= 0 ? 3 : preferences.ConnectionQualityIntervalSeconds, 1, 86400) };
-        var rows = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, RowCount = 5, AutoSize = true };
-        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
-        rows.Controls.Add(new Label { Text = "设备状态扫描", Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold), ForeColor = UiDesignTokens.TextPrimary });
-        var input = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 4, 0, 0) };
-        input.Controls.Add(new Label { Text = "扫描周期：", AutoSize = false, Width = 220, Height = 32, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty });
-        input.Controls.Add(_interval);
-        input.Controls.Add(new Label { Text = "秒", AutoSize = true, Margin = new Padding(8, 8, 0, 0) });
-        rows.Controls.Add(input);
-        rows.Controls.Add(new Label
-        {
-            Text = "控制台会按此周期同时检查每台设备的地址和端口。默认每小时扫描一次。\n绿色表示 TCP 端口可连接，红色表示当前不可连接；扫描不会建立 RDP 登录会话。",
-            Dock = DockStyle.Fill,
-            ForeColor = UiDesignTokens.TextSecondary,
-            Padding = new Padding(0, 8, 0, 0),
-        });
-        var qualityInput = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        qualityInput.Controls.Add(new Label { Text = "连接状态刷新间隔：", AutoSize = false, Width = 220, Height = 32, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty });
-        qualityInput.Controls.Add(_qualityInterval);
-        qualityInput.Controls.Add(new Label { Text = "秒", AutoSize = true, Margin = new Padding(8, 6, 0, 0) });
-        rows.Controls.Add(qualityInput);
-        rows.Controls.Add(new Label { Text = "质量、速度、延迟、丢包率的采样间隔，默认 3 s。\n保存后对现有连接和预览立即生效；网络请求未完成时不会重复采样。", Dock = DockStyle.Fill, ForeColor = UiDesignTokens.TextSecondary });
+        Control Seconds(NumericUpDown input) => SettingsPageDesign.Actions(input,
+            new Label { Text = "秒", AutoSize = true, Margin = new Padding(8, 5, 0, 0) });
+        var rows = SettingsPageDesign.Stack();
+        SettingsPageDesign.Add(rows, SettingsPageDesign.Section("设备可达性",
+            SettingsPageDesign.Field("扫描周期", Seconds(_interval)),
+            SettingsPageDesign.Note("启动控制台先扫描一次，之后按周期检查设备地址与 TCP 端口；默认每小时一次。\n绿色表示端口可连接，红色表示当前不可连接。扫描不建立 RDP 登录会话。")));
+        SettingsPageDesign.Add(rows, SettingsPageDesign.Section("连接质量",
+            SettingsPageDesign.Field("状态刷新间隔", Seconds(_qualityInterval)),
+            SettingsPageDesign.Note("质量、速度、延迟和丢包率的采样间隔，默认 3 秒。保存后对现有连接与预览生效。\n网络请求未完成时不重复采样；尚未取得的数据与真实零值分别显示。")));
         Controls.Add(rows);
     }
 
@@ -512,7 +393,7 @@ internal sealed class ConnectionLogPage : SettingsPage
             }
             RefreshLogs();
         };
-        heading.Controls.Add(new Label { Text = "连接日志统计", Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold), ForeColor = UiDesignTokens.TextPrimary });
+        heading.Controls.Add(new Label { Text = "设备连接概览", Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold), ForeColor = UiDesignTokens.TextPrimary });
         heading.Controls.Add(clearButton);
         layout.Controls.Add(heading);
         _summaryLabel = new Label { Text = "正在读取日志…", Dock = DockStyle.Fill, ForeColor = UiDesignTokens.TextSecondary, TextAlign = ContentAlignment.MiddleLeft };
@@ -773,7 +654,7 @@ internal sealed class AboutSettingsPage : SettingsPage
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
         root.Dock = DockStyle.Top;
-        root.Height = 634;
+        root.Height = 642;
 
         var hero = new RoundedSurfacePanel { Dock = DockStyle.Fill, Padding = new Padding(24, 20, 24, 20), BackColor = UiDesignTokens.SurfaceSubtle };
         var heroLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
@@ -914,28 +795,16 @@ internal sealed class PreviewSettingsPage : SettingsPage
     public PreviewSettingsPage(GlobalPreviewPreferences preferences)
     {
         BackColor = UiDesignTokens.Surface;
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(new Label { Text = "卡片预览", Dock = DockStyle.Fill,
-            Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold) });
-        _enabled = new CheckBox
-        {
-            Text = "开启预览窗",
-            Checked = preferences.Enabled,
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Appearance = Appearance.Normal,
-            ForeColor = UiDesignTokens.TextPrimary,
-            AccessibleName = "开启预览窗",
-        };
-        layout.Controls.Add(_enabled);
-        layout.Controls.Add(new Label { Dock = DockStyle.Fill, ForeColor = UiDesignTokens.TextSecondary,
-            Text = "卡片内显示只读远程画面，不接收鼠标或键盘操作。\n连接窗口最小化后，预览继续显示。\n未打开连接窗口时，点击“预览”单独建立后台连接。\n已有连接时复用会话，避免重复登录。\n关闭此功能会停止独立预览，不会关闭连接窗口。" });
-        Controls.Add(layout);
+        _enabled = new CheckBox { Text = "开启预览窗", Checked = preferences.Enabled, AutoSize = true,
+            ForeColor = UiDesignTokens.TextPrimary, AccessibleName = "开启预览窗" };
+        var rows = SettingsPageDesign.Stack();
+        SettingsPageDesign.Add(rows, SettingsPageDesign.Section("卡片预览", _enabled,
+            SettingsPageDesign.Note("卡片内的只读画面不接收鼠标或键盘输入。预览前后及连接状态变化不会改变卡片尺寸。")));
+        SettingsPageDesign.Add(rows, SettingsPageDesign.Section("会话与显示",
+            SettingsPageDesign.Note("已有连接时复用会话，避免重复登录。连接窗口最小化后预览继续显示。\n未打开连接窗口时，点击“预览”可建立独立后台连接。\n关闭此功能会停止独立预览，不会关闭正在使用的连接窗口。")));
+        Controls.Add(rows);
     }
+
     public override void ApplyTo(GlobalSettings settings) => settings.Previews.Enabled = _enabled.Checked;
     public override void LoadFrom(GlobalSettings settings) => _enabled.Checked = settings.Previews.Enabled;
 }

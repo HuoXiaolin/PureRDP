@@ -27,7 +27,7 @@ internal sealed class GlassWindowControlStrip : Form
     private bool _doubleMaximizePress;
     private int _hovered = -1, _pressed = -1;
     private readonly int? _resizeCorner;
-    private ControlBarPosition _position = ControlBarPosition.Right;
+    private ControlBarPosition _position = ControlBarPosition.Top;
     public GlassWindowControlStrip() : this(null) { }
     public GlassWindowControlStrip(int? resizeCorner)
     {

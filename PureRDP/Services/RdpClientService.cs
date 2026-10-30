@@ -338,15 +338,12 @@ internal sealed class RdpClientService : IDisposable
         if (_rdpControl.Bounds != bounds) _rdpControl.Bounds = bounds;
         try
         {
-            // Always let the RDP control scale the complete desktop into the
-            // calculated bounds.  ZoomLevel is not implemented by every
-            // Windows RDP ActiveX version; setting it while the window is
-            // maximized leaves SmartSizing disabled and enlarges/crops the
-            // old desktop during the asynchronous resolution update.
-            // SmartSizing also keeps the full picture visible while the
-            // server is transitioning between the normal and maximized sizes.
-            if (!_rdpClient.AdvancedSettings9.SmartSizing)
-                _rdpClient.AdvancedSettings9.SmartSizing = true;
+            // A matching remote desktop should render pixel-for-pixel. Only
+            // scale when the complete desktop actually needs fitting (tiles,
+            // fixed zoom or a pending/unsupported remote-size update).
+            var requiresScaling = size.Width != width || size.Height != height;
+            if (_rdpClient.AdvancedSettings9.SmartSizing != requiresScaling)
+                _rdpClient.AdvancedSettings9.SmartSizing = requiresScaling;
         }
         catch (COMException exception) { ReportDisplay($"picture-scale HRESULT=0x{exception.HResult:X8}"); }
     }
@@ -717,7 +714,7 @@ internal sealed class RdpClientService : IDisposable
 
         // Local fitting also applies before OnLoginComplete. Dynamic desktop
         // updates and SmartSizing are complementary, not mutually exclusive.
-        _rdpClient.AdvancedSettings9.SmartSizing = true;
+        _rdpClient.AdvancedSettings9.SmartSizing = false;
 
         ((IMsRdpClientNonScriptable5)_rdpClient).UseMultimon = _connectionSettings.UseAllMonitors == true;
         LayoutPicture(initialWidth, initialHeight);
@@ -891,7 +888,11 @@ internal sealed class RdpClientService : IDisposable
 
     private System.Drawing.Size GetInitialDesktopSize(ConnectionSettings settings)
     {
-        if (settings.PreserveImportedDesktop == true && settings.Width > 0 && settings.Height > 0)
+        // Broker compatibility suppresses post-connect display requests, not
+        // the initial viewport negotiation. A dynamic window must not enlarge
+        // an old 1600x900 bitmap when its client area has a different size.
+        var dynamicViewport = settings.AutoResize == true || settings.AutoMaximizeWindow == true;
+        if (settings.PreserveImportedDesktop == true && !dynamicViewport && settings.Width > 0 && settings.Height > 0)
             return new System.Drawing.Size((int)GetRemoteDimension(settings.Width.Value), (int)GetRemoteDimension(settings.Height.Value));
         var form = _container.FindForm();
         var fillWindow = !_tileMode && (form?.WindowState == FormWindowState.Maximized || _fullScreen || settings.AutoMaximizeWindow == true);

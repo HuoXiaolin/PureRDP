@@ -45,7 +45,7 @@ public partial class FormRdpClient : Form
     private readonly List<FormRdpClient> _sessionWindows = [];
     private readonly Dictionary<string, PreviewSessionHost> _previewSessions = new(StringComparer.OrdinalIgnoreCase);
     private bool _autoTileSessions;
-    private ControlBarPosition _globalControlBarPosition = ControlBarPosition.Right;
+    private ControlBarPosition _globalControlBarPosition = ControlBarPosition.Top;
     private bool _globalControlBarAutoHide = true;
     private bool _roundedConnectionCorners = true;
     private Size _roundedRegionSize;
@@ -308,13 +308,21 @@ public partial class FormRdpClient : Form
         }
     }
 
-    private void OpenSessionWindow()
+    private FormRdpClient? FindReusableSessionWindow()
     {
-        var existing = _sessionWindows.FirstOrDefault(window => !window.IsDisposed && !window._sessionClosing &&
-            !window._previewOnly &&
+        // A broker endpoint/account is not the remote device identity. Every
+        // external handoff has its own ticket and must own its own window.
+        if (_appSettings.IsExternalConnection) return null;
+        return _sessionWindows.FirstOrDefault(window => !window.IsDisposed && !window._sessionClosing &&
+            !window._previewOnly && !window._appSettings.IsExternalConnection &&
             string.Equals(window._appSettings.Connection.Hostname, _appSettings.Connection.Hostname, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(window._appSettings.Connection.Username, _appSettings.Connection.Username, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(window._appSettings.Connection.Domain, _appSettings.Connection.Domain, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void OpenSessionWindow()
+    {
+        var existing = FindReusableSessionWindow();
         if (existing != null)
         {
             existing.ApplyConnectionSettings(_appSettings.Connection, _appSettings.IsExternalConnection);
@@ -332,18 +340,21 @@ public partial class FormRdpClient : Form
                 NoCloseOnDisconnect = true,
             },
         };
-        var previewKey = PreviewKey(_appSettings.Connection);
-        if (_previewSessions.TryGetValue(previewKey, out var preview) && !preview.IsDisposed &&
-            preview.PrepareForInteractive(_appSettings.Connection) &&
-            sessionWindow.AdoptPreviewSession(preview))
+        if (!_appSettings.IsExternalConnection)
         {
-            _previewSessions.Remove(previewKey);
-            preview.Dispose();
-        }
-        else
-        {
-            _previewSessions.Remove(previewKey);
-            preview?.Dispose();
+            var previewKey = PreviewKey(_appSettings.Connection);
+            if (_previewSessions.TryGetValue(previewKey, out var preview) && !preview.IsDisposed &&
+                preview.PrepareForInteractive(_appSettings.Connection) &&
+                sessionWindow.AdoptPreviewSession(preview))
+            {
+                _previewSessions.Remove(previewKey);
+                preview.Dispose();
+            }
+            else
+            {
+                _previewSessions.Remove(previewKey);
+                preview?.Dispose();
+            }
         }
         sessionWindow._formSizeEnforcementService.IsActive = sessionWindow._appSettings.Connection.AutoResize == true ||
                                                               sessionWindow._appSettings.Connection.AutoMaximizeWindow == true;
@@ -369,7 +380,7 @@ public partial class FormRdpClient : Form
 
     private FormRdpClient? FindPreviewSession(ConnectionSettings settings)
         => _sessionWindows.FirstOrDefault(s => !s.IsDisposed && !s._sessionClosing &&
-            !s._previewOnly &&
+            !s._previewOnly && !s._appSettings.IsExternalConnection &&
             string.Equals(PreviewKey(s._appSettings.Connection), PreviewKey(settings), StringComparison.OrdinalIgnoreCase));
 
     private void StartPreview(ConnectionSettings settings)
@@ -2188,6 +2199,7 @@ public partial class FormRdpClient : Form
 
         try
         {
+            PrepareConnectionViewport();
             ApplyKeyboardModeForCurrentWindow();
             _rdpService.Connect(_appSettings.Connection);
             if (automaticRetry && _reconnectFullScreen && !_rdpService.FullScreen)
@@ -2445,7 +2457,7 @@ public partial class FormRdpClient : Form
             ApplyConnectionSettings(_appSettings.Connection);
         else if (_settingsConnectRequested)
         {
-            var target = _sessionWindows.FirstOrDefault(s => !s.IsDisposed && !s._sessionClosing &&
+            var target = _sessionWindows.FirstOrDefault(s => !s.IsDisposed && !s._sessionClosing && !s._appSettings.IsExternalConnection &&
                 string.Equals(s._appSettings.Connection.Hostname, _appSettings.Connection.Hostname, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(s._appSettings.Connection.Username, _appSettings.Connection.Username, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(s._appSettings.Connection.Domain, _appSettings.Connection.Domain, StringComparison.OrdinalIgnoreCase));
@@ -3162,6 +3174,21 @@ public partial class FormRdpClient : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    private void PrepareConnectionViewport()
+    {
+        if (!_isSessionWindow || _previewOnly) return;
+        // Negotiate against the final borderless client area. In particular,
+        // broker sessions may reject any later display-size request: removing
+        // a title bar after Connect leaves a permanently shorter desktop.
+        SetRemoteConnectionChrome(true);
+        if (_applyConnectionWindowSizeAfterConnect)
+        {
+            ApplyConnectionWindowSize();
+            _applyConnectionWindowSizeAfterConnect = false;
+        }
+        PerformLayout();
     }
 
     private void RdpService_Connected(object? sender, EventArgs e)

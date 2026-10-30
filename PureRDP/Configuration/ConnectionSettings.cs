@@ -166,7 +166,7 @@ internal class ConnectionSettings
     /// monitor's working area while leaving the Windows taskbar visible.
     /// This is intentionally separate from RDP full-screen mode.
     /// </summary>
-    [RdpFile("pure rdp window auto maximize", DefaultValue = "0")]
+    [RdpFile("pure rdp window auto maximize", DefaultValue = "1")]
     public bool? AutoMaximizeWindow { get; set; }
 
     /// <summary>

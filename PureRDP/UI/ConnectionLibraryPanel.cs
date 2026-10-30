@@ -23,6 +23,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
     private readonly ComboBox _viewModeComboBox;
     private readonly List<ModernButton> _viewButtons = [];
     private readonly FlowLayoutPanel _itemsPanel;
+    private readonly ConnectionListHeader _listHeader;
     private readonly Panel _emptyPanel;
     private readonly Label _emptyTitleLabel;
     private readonly Label _emptyHintLabel;
@@ -332,6 +333,9 @@ internal sealed class ConnectionLibraryPanel : UserControl
             BackColor = UiDesignTokens.PageBackground,
         };
         contentPanel.Controls.Add(_itemsPanel);
+        _listHeader = new ConnectionListHeader { Visible = false, Font = new Font(UiDesignTokens.FontFamily, 9F) };
+        contentPanel.Controls.Add(_listHeader);
+        _itemsPanel.BringToFront();
         contentPanel.Controls.Add(_emptyPanel);
         Controls.Add(contentPanel);
 
@@ -550,6 +554,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
     private void ConfigureItemsPanel()
     {
+        _listHeader.Visible = _viewMode == ConnectionLibraryViewMode.List;
         _itemsPanel.FlowDirection = _viewMode == ConnectionLibraryViewMode.Cards
             ? FlowDirection.LeftToRight : FlowDirection.TopDown;
         _itemsPanel.WrapContents = _viewMode == ConnectionLibraryViewMode.Cards;
@@ -620,6 +625,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
 
     private void UpdateCardSizes()
     {
+        _listHeader?.Invalidate();
         int Px(int value) => (int)Math.Round(value * DeviceDpi / 96.0);
         // Cards use one to three equally-sized columns; row/list views fill
         // the viewport instead of leaving an unused strip on the right.
@@ -631,6 +637,7 @@ internal sealed class ConnectionLibraryPanel : UserControl
         {
             var cellWidth = available / columns + (index++ % columns < available % columns ? 1 : 0);
             card.Width = Math.Max(Px(_viewMode == ConnectionLibraryViewMode.List ? UiDesignTokens.ListCardMinimumWidth : 280), cellWidth - card.Margin.Horizontal);
+            if (_listHeader != null) _listHeader.ItemWidth = card.Width;
         }
     }
 

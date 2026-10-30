@@ -36,6 +36,10 @@ internal static class Program
         var type = typeof(FormRdpClient);
         var window = (FormRdpClient)Activator.CreateInstance(type, Members, null,
             new object?[] { Array.Empty<string>(), true, manager }, null)!;
+        var profile = Field(window, "_appSettings").GetType().GetProperty("Connection")!.GetValue(Field(window, "_appSettings"))!;
+        // These scenarios exercise freely sized windows; maximize startup is
+        // covered separately and must not depend on the product default.
+        profile.GetType().GetProperty("AutoMaximizeWindow")!.SetValue(profile, false);
         // Exercise real HWND transitions without login, user settings writes,
         // tray startup, shortcut registration or any remote network session.
         var shown = type.GetMethod("FormRdpClient_Shown", Members)!;
@@ -56,7 +60,9 @@ internal static class Program
         var failureFile = Path.Combine("outputs", "ci-tests", "window-assertion-failure.txt");
         if (File.Exists(failureFile)) File.Delete(failureFile);
         TestSilentStartupVisibility();
+        TestExternalWindowIsolation();
         TestPreLoginViewport();
+        TestConnectionViewportStability();
         TestRoutingPacket();
         using var manager = Window(null);
         _ = manager.Handle;
@@ -416,6 +422,35 @@ internal static class Program
         finally { Call(service, "RemoveRdpControlAndClient"); }
     }
 
+    private static void TestConnectionViewportStability()
+    {
+        using var window = Window(null);
+        window.Show(); Pump();
+        var settings = Field(window, "_appSettings");
+        var profile = settings.GetType().GetProperty("Connection")!.GetValue(settings)!;
+        profile.GetType().GetProperty("AutoResize")!.SetValue(profile, true);
+        profile.GetType().GetProperty("PreserveImportedDesktop")!.SetValue(profile, true);
+        var service = Field(window, "_rdpService");
+        foreach (var maximized in new[] { false, true })
+        {
+            Call(window, "SetRemoteConnectionChrome", false);
+            window.WindowState = maximized ? FormWindowState.Maximized : FormWindowState.Normal;
+            if (!maximized) window.ClientSize = new Size(1000, 700);
+            Call(window, "PrepareConnectionViewport"); Pump();
+            var canvas = (Control)Field(window, "panelRdp");
+            var before = canvas.ClientSize;
+            var requested = (Size)Call(service, "GetInitialDesktopSize", profile);
+            Check(window.FormBorderStyle == FormBorderStyle.None,
+                "The first handshake must use the final borderless host, including maximized windows.");
+            Call(window, "RdpService_Connected", window, EventArgs.Empty); Pump();
+            Check(canvas.ClientSize == before,
+                "Connection completion must not enlarge the viewport by removing a late title bar.");
+            Check(Math.Abs(requested.Width - canvas.ClientSize.Width) <= 1 &&
+                  Math.Abs(requested.Height - canvas.ClientSize.Height) <= 1,
+                "A broker desktop must match the final canvas within even-pixel rounding, without a title-bar-height bottom gap.");
+        }
+    }
+
     private static void TestPreLoginViewport()
     {
         Console.WriteLine("Pre-login regression: creating isolated host.");
@@ -431,8 +466,12 @@ internal static class Program
         profile.GetType().GetProperty("Width")!.SetValue(profile, 1600);
         profile.GetType().GetProperty("Height")!.SetValue(profile, 900);
         profile.GetType().GetProperty("PreserveImportedDesktop")!.SetValue(profile, true);
+        Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(800, 600),
+            "Dynamic broker connections must initially negotiate the real client pixels instead of stretching an imported resolution.");
+        profile.GetType().GetProperty("AutoResize")!.SetValue(profile, false);
         Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(1600, 900),
-            "Broker compatibility must honor the imported initial resolution before any desktop negotiation.");
+            "Explicit fixed-size broker connections must continue to honor their imported resolution.");
+        profile.GetType().GetProperty("AutoResize")!.SetValue(profile, true);
         profile.GetType().GetProperty("PreserveImportedDesktop")!.SetValue(profile, null);
         service.GetType().GetField("_connectionSettings", Members)!.SetValue(service, profile);
         Check((Size)Call(service, "GetInitialDesktopSize", profile) == new Size(800, 600),
@@ -458,6 +497,15 @@ internal static class Program
         {
         Console.WriteLine("Pre-login regression: configuring local desktop.");
         var client = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
+        Call(service, "LayoutPicture", 800u, 600u);
+        Check(!client.AdvancedSettings9.SmartSizing,
+            "A one-to-one viewport must disable bitmap SmartSizing rather than resample an already matched desktop.");
+        Call(service, "LayoutPicture", 1600u, 900u);
+        Check(client.AdvancedSettings9.SmartSizing,
+            "A mismatched desktop must still fit completely without cropping while resolution is pending or unavailable.");
+        Call(service, "LayoutPicture", 800u, 600u);
+        Check(!client.AdvancedSettings9.SmartSizing,
+            "Once the actual desktop reaches the viewport, local bitmap scaling must turn off again.");
         profile.GetType().GetProperty("AlternateShell")!.SetValue(profile, "fixture-remote-startup --ticket=example:token");
         profile.GetType().GetProperty("ShellWorkingDirectory")!.SetValue(profile, "C:\\fixture remote");
         Call(service, "ApplyRemoteStartupSettings");
@@ -562,6 +610,49 @@ internal static class Program
             // an ActiveX which was only initialized for a local sizing test.
             Call(service, "RemoveRdpControlAndClient");
         }
+    }
+
+    private static void TestExternalWindowIsolation()
+    {
+        using var manager = Window(null);
+        using var first = Window(manager);
+        using var second = Window(manager);
+        var windows = (IList)Field(manager, "_sessionWindows");
+        windows.Add(first); windows.Add(second);
+        object Profile(FormRdpClient window) => Field(window, "_appSettings").GetType().GetProperty("Connection")!.GetValue(Field(window, "_appSettings"))!;
+        void External(FormRdpClient window, bool value) => Field(window, "_appSettings").GetType().GetProperty("IsExternalConnection")!.SetValue(Field(window, "_appSettings"), value);
+        foreach (var window in new[] { manager, first, second })
+        {
+            var profile = Profile(window);
+            profile.GetType().GetProperty("Hostname")!.SetValue(profile, "broker.example.invalid:3391");
+            profile.GetType().GetProperty("Username")!.SetValue(profile, null);
+            External(window, true);
+        }
+        var firstProfile = Profile(first);
+        var secondProfile = Profile(second);
+        firstProfile.GetType().GetProperty("LoadBalanceInfo")!.SetValue(firstProfile, "fixture-ticket-a");
+        secondProfile.GetType().GetProperty("LoadBalanceInfo")!.SetValue(secondProfile, "fixture-ticket-b");
+        var selector = typeof(FormRdpClient).GetMethod("FindReusableSessionWindow", Members)!;
+        Check(selector.Invoke(manager, null) == null,
+            "A new external request must not reuse an existing broker window even when endpoint and account match.");
+        External(manager, false);
+        Check(selector.Invoke(manager, null) == null,
+            "A saved device must never overwrite an external session sharing the same gateway endpoint.");
+        External(first, false);
+        Check(ReferenceEquals(selector.Invoke(manager, null), first),
+            "Saved-device connections must retain their existing window reuse behavior.");
+        External(first, true); External(manager, true);
+        first.Show(); second.Show(); Pump();
+        Check(first.Handle != second.Handle && IsWindowVisible(first.Handle) && IsWindowVisible(second.Handle),
+            "Two external handoffs must own distinct, simultaneously visible native windows.");
+        Check((string?)firstProfile.GetType().GetProperty("LoadBalanceInfo")!.GetValue(firstProfile) == "fixture-ticket-a" &&
+            (string?)secondProfile.GetType().GetProperty("LoadBalanceInfo")!.GetValue(secondProfile) == "fixture-ticket-b",
+            "Selecting a new handoff must leave both session tickets unchanged.");
+        first.Close(); Pump();
+        Check(!second.IsDisposed && IsWindowVisible(second.Handle) &&
+            (string?)secondProfile.GetType().GetProperty("LoadBalanceInfo")!.GetValue(secondProfile) == "fixture-ticket-b",
+            "Closing one external window must not close or reconfigure the other.");
+        windows.Clear();
     }
 
     private static void TestSilentStartupVisibility()
@@ -718,10 +809,10 @@ internal static class Program
         var stripType = typeof(FormRdpClient).Assembly.GetType("PureRDP.UI.GlassWindowControlStrip")!;
         var positionType = typeof(FormRdpClient).Assembly.GetType("PureRDP.Configuration.Enums.ControlBarPosition")!;
         using var rail = (Form)Activator.CreateInstance(stripType, true)!;
-        Check(rail.Size == new Size(12, 44), "Initial rail must use the chosen medium capsule width.");
+        Check(rail.Size == new Size(44, 12), "Initial top rail must use the chosen medium capsule dimensions.");
         rail.Location = Screen.PrimaryScreen!.WorkingArea.Location + new Size(200, 200);
         rail.Show();
-        Check(rail.Size == new Size(12, 44), "First Show must not impose a different capsule width.");
+        Check(rail.Size == new Size(44, 12), "First Show must not impose a different top capsule size.");
         var evidence = Path.Combine("outputs", "ui-review");
         Directory.CreateDirectory(evidence);
         using var review = new Bitmap(400, 220);

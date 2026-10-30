@@ -23,6 +23,9 @@ internal static class Program
     {
         var window = (FormRdpClient)Activator.CreateInstance(typeof(FormRdpClient), Members, null,
             new object?[] { Array.Empty<string>(), true, manager }, null)!;
+        var profile = Field(window, "_appSettings").GetType().GetProperty("Connection")!.GetValue(Field(window, "_appSettings"))!;
+        // The assertions below deliberately restore normal-sized windows.
+        profile.GetType().GetProperty("AutoMaximizeWindow")!.SetValue(profile, false);
         _ = window.Handle;
         return window;
     }

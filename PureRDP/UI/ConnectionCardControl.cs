@@ -239,8 +239,11 @@ internal sealed class ConnectionCardControl : UserControl
     public void SetViewMode(ConnectionLibraryViewMode mode)
     {
         ViewMode = mode;
+        _connectButton.Kind = mode == ConnectionLibraryViewMode.Cards ? ModernButtonKind.Primary : ModernButtonKind.Secondary;
         var isList = mode == ConnectionLibraryViewMode.List;
         var isHorizontal = mode == ConnectionLibraryViewMode.Horizontal;
+        MinimumSize = new Size(Px(210), Px(isList ? 48 : 56));
+        Margin = isList || isHorizontal ? new Padding(Px(6), Px(2), Px(6), Px(2)) : new Padding(Px(UiDesignTokens.CardGap));
 
         if (isList)
         {
@@ -253,7 +256,7 @@ internal sealed class ConnectionCardControl : UserControl
         }
 
         var showPreview = !isList && !isHorizontal && PreviewEnabled && PreviewOpen;
-        Height = Px(isList ? 96 : isHorizontal ? 108 : 190);
+        Height = Px(isList ? 48 : isHorizontal ? 86 : 190);
         _preview.Visible = showPreview;
         _previewTitle.Visible = false;
         _previewButton.Visible = !isList && !isHorizontal && PreviewEnabled;
@@ -311,10 +314,10 @@ internal sealed class ConnectionCardControl : UserControl
         SuspendLayout();
         try
         {
-            MinimumSize = new Size(Px(210), Px(56));
-            Margin = new Padding(Px(UiDesignTokens.CardGap));
-            Height = Px(ViewMode == ConnectionLibraryViewMode.List ? 96 :
-                ViewMode == ConnectionLibraryViewMode.Horizontal ? 108 : 190);
+            MinimumSize = new Size(Px(210), Px(ViewMode == ConnectionLibraryViewMode.List ? 48 : 56));
+            Margin = ViewMode == ConnectionLibraryViewMode.Cards ? new Padding(Px(UiDesignTokens.CardGap)) : new Padding(Px(6), Px(2), Px(6), Px(2));
+            Height = Px(ViewMode == ConnectionLibraryViewMode.List ? 48 :
+                ViewMode == ConnectionLibraryViewMode.Horizontal ? 86 : 190);
             LayoutActionPanel();
         }
         finally { ResumeLayout(false); }
@@ -326,15 +329,15 @@ internal sealed class ConnectionCardControl : UserControl
     private void SetLogicalBounds(Control control, int x, int y, int width, int height)
         => control.SetBounds(Px(x), Px(y), Math.Max(1, Px(width)), Math.Max(1, Px(height)));
 
-    protected override void OnGotFocus(EventArgs e)
+    protected override void OnEnter(EventArgs e)
     {
-        base.OnGotFocus(e);
+        base.OnEnter(e);
         Invalidate();
     }
 
-    protected override void OnLostFocus(EventArgs e)
+    protected override void OnLeave(EventArgs e)
     {
-        base.OnLostFocus(e);
+        base.OnLeave(e);
         Invalidate();
     }
 
@@ -357,15 +360,18 @@ internal sealed class ConnectionCardControl : UserControl
 
         using var fill = new SolidBrush(UiDesignTokens.Surface);
         e.Graphics.FillPath(fill, cardPath);
-        var borderColor = Focused ? UiDesignTokens.Accent : _hovered ? UiDesignTokens.BorderStrong : UiDesignTokens.Border;
-        using var borderPen = new Pen(borderColor, Focused ? 2F : 1F);
-        e.Graphics.DrawPath(borderPen, cardPath);
-
-        if (_hovered || Focused)
+        // Emphasize the complete rounded perimeter instead of a left stripe.
+        // Keep the white surface and geometry stable, and retain the focus
+        // treatment while a button inside the card owns keyboard focus.
+        var selected = ContainsFocus;
+        if (selected)
         {
-            using var accentBrush = new SolidBrush(Color.FromArgb(Focused ? 220 : 150, UiDesignTokens.Accent));
-            e.Graphics.FillRectangle(accentBrush, new Rectangle(2, 18, 4, Math.Max(18, Height - 36)));
+            using var focusHalo = new Pen(Color.FromArgb(38, UiDesignTokens.Accent), 5F);
+            e.Graphics.DrawPath(focusHalo, cardPath);
         }
+        var borderColor = selected ? UiDesignTokens.Accent : _hovered ? UiDesignTokens.BorderStrong : UiDesignTokens.Border;
+        using var borderPen = new Pen(borderColor, selected ? 2F : _hovered ? 1.5F : 1F);
+        e.Graphics.DrawPath(borderPen, cardPath);
 
         var statusColor = _availabilityState switch
         {
@@ -397,25 +403,21 @@ internal sealed class ConnectionCardControl : UserControl
             _qualityLabel.Text = string.Join(" · ", qualityLines);
             _qualityLabel.AutoEllipsis = true;
             _qualityLabel.TextAlign = ContentAlignment.MiddleLeft;
-            SetLogicalBounds(_pinButton, width - 64, 14, 28, 28);
-            SetLogicalBounds(_avatarPanel, 16, 14, 28, 28);
+            SetLogicalBounds(_pinButton, width - 64, 10, 28, 28);
+            SetLogicalBounds(_avatarPanel, 16, 10, 28, 28);
             var contentWidth = Math.Max(1, Logical(_actionPanel.Left) - 66);
-            var showQuality = contentWidth >= 600;
-            var columnBudget = contentWidth - (showQuality ? 32 : 24);
-            var titleWidth = columnBudget * 18 / 100;
-            var hostWidth = columnBudget * (showQuality ? 23 : 30) / 100;
-            var userWidth = columnBudget * (showQuality ? 18 : 22) / 100;
-            var hintWidth = columnBudget * (showQuality ? 23 : 30) / 100;
+            var showQuality = contentWidth >= 610;
+            var columns = ConnectionListColumns.Widths(contentWidth, showQuality);
             var x = 54;
             foreach (var (label, columnWidth) in new[] {
-                (_titleLabel, titleWidth), (_hostLabel, hostWidth),
-                (_metaLabel, userWidth), (_hintLabel, hintWidth) })
+                (_titleLabel, columns[0]), (_hostLabel, columns[1]),
+                (_metaLabel, columns[2]), (_hintLabel, columns[3]) })
             {
                 label.AutoEllipsis = true;
-                SetLogicalBounds(label, x, 14, columnWidth, 28);
+                SetLogicalBounds(label, x, 10, columnWidth, 28);
                 x += columnWidth + 8;
             }
-            SetLogicalBounds(_qualityLabel, x, 14, showQuality ? contentWidth - (x - 54) : 1, 28);
+            SetLogicalBounds(_qualityLabel, x, 10, showQuality ? Math.Max(1, columns[4]) : 1, 28);
             _qualityLabel.Visible = showQuality;
             return;
         }
@@ -425,6 +427,24 @@ internal sealed class ConnectionCardControl : UserControl
         _qualityLabel.Text = !isList && !isHorizontal && qualityLines.Length == 4
             ? $"{qualityLines[0]} · {qualityLines[1]}\n{qualityLines[2]} · {qualityLines[3]}"
             : _connectionQuality?.ToDisplayText() ?? string.Empty;
+        if (isHorizontal)
+        {
+            SetLogicalBounds(_pinButton, width - 64, 8, 28, 28);
+            SetLogicalBounds(_avatarPanel, 16, 16, 32, 32);
+            var rowTextRight = Math.Max(180, Logical(_actionPanel.Left) - 12);
+            var identityWidth = Math.Min(250, Math.Max(112, (rowTextRight - 58) / 2));
+            var rowQualityLeft = 58 + identityWidth + 16;
+            SetLogicalBounds(_titleLabel, 58, 10, identityWidth, 24);
+            SetLogicalBounds(_hostLabel, 58, 35, identityWidth, 20);
+            SetLogicalBounds(_metaLabel, 58, 57, identityWidth / 2, 18);
+            SetLogicalBounds(_hintLabel, 64 + identityWidth / 2, 57, identityWidth / 2 - 6, 18);
+            _qualityLabel.Text = qualityLines.Length == 4
+                ? $"{qualityLines[0]} · {qualityLines[1]}\n{qualityLines[2]} · {qualityLines[3]}"
+                : _connectionQuality?.ToDisplayText() ?? string.Empty;
+            _qualityLabel.AutoEllipsis = true;
+            SetLogicalBounds(_qualityLabel, rowQualityLeft, 21, Math.Max(1, rowTextRight - rowQualityLeft), 44);
+            return;
+        }
         SetLogicalBounds(_pinButton, width - 64,
             !isList && !isHorizontal ? 12 : 8, 28, 28);
         if (ViewMode == ConnectionLibraryViewMode.Cards && width >= 700)
@@ -495,16 +515,16 @@ internal sealed class ConnectionCardControl : UserControl
         var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal && width >= 540;
         // Session state changes content, never tile geometry. Reserve the same
         // body height before/after preview and connection-quality updates.
-        var height = isList ? 56 : isHorizontal ? 108 :
+        var height = isList ? 48 : isHorizontal ? 86 :
             ViewMode == ConnectionLibraryViewMode.Cards && width >= 700 ? 178 : 190;
         if (Height != Px(height)) Height = Px(height);
-        var actionWidth = isList || isHorizontal ? 198 : Math.Max(1, width - 40);
-        SetLogicalBounds(_actionPanel, isList ? width - actionWidth - 90 : isHorizontal ? width - actionWidth - 18 : 20,
-            isList ? 11 : isHorizontal ? Math.Max(40, (height - 34) / 2) : height - 42, actionWidth, 34);
-        var connectWidth = isList || isHorizontal ? 82 : Math.Max(80, actionWidth - 120);
+        var actionWidth = isList || isHorizontal ? 168 : Math.Max(1, width - 40);
+        SetLogicalBounds(_actionPanel, isList ? width - actionWidth - 78 : isHorizontal ? width - actionWidth - 18 : 20,
+            isList ? 7 : isHorizontal ? 40 : height - 42, actionWidth, 34);
+        var connectWidth = isList || isHorizontal ? 58 : Math.Max(80, actionWidth - 120);
         SetLogicalBounds(_connectButton, 0, 0, connectWidth, 34);
         SetLogicalBounds(_editButton, connectWidth + 8, 0, 52, 34);
-        SetLogicalBounds(_deleteButton, connectWidth + 64, 0, 52, 34);
+        SetLogicalBounds(_deleteButton, connectWidth + 64, 0, isList || isHorizontal ? 46 : 52, 34);
         if (!isList && !isHorizontal && PreviewEnabled)
         {
             var primaryWidth = Math.Max(50, (actionWidth - 128) / 2);

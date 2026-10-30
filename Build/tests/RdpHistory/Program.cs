@@ -590,6 +590,31 @@ internal static class Program
             Check(profileType.GetProperty(property)!.GetValue(sanitized) == null, "Shared preferences must exclude identity and tickets: " + property);
         var preferencesType = App.GetType("PureRDP.Configuration.GlobalRdpProxyPreferences")!;
         var preferences = Activator.CreateInstance(preferencesType, true)!;
+        Check((bool)preferencesType.GetProperty("UseCommonSettings")!.GetValue(preferences)!,
+            "Unconfigured external connections must enable common settings by default.");
+        var defaults = preferencesType.GetProperty("Connection")!.GetValue(preferences)!;
+        foreach (var pair in new (string Name, object? Value)[] {
+            ("AutoMaximizeWindow", true), ("AutoResize", true), ("SmartSizing", false),
+            ("ViewScaleFactor", 0u), ("ScaleFactor", null), ("ColorDepth", 32),
+            ("EnableCompression", true), ("EnableBitmapPersistence", true) })
+            Check(Equals(profileType.GetProperty(pair.Name)!.GetValue(defaults), pair.Value),
+                "Unconfigured common display default: " + pair.Name);
+        var saved = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"UseCommonSettings\":false,\"Connection\":{\"AutoMaximizeWindow\":false,\"AutoResize\":false,\"SmartSizing\":true,\"ScaleFactor\":100}}", preferencesType)!;
+        Check(!(bool)preferencesType.GetProperty("UseCommonSettings")!.GetValue(saved)!,
+            "An explicitly saved disabled common-settings choice must be retained.");
+        var savedConnection = preferencesType.GetProperty("Connection")!.GetValue(saved)!;
+        var normalized = commonService.GetMethod("Sanitize", Static)!.Invoke(null, [savedConnection])!;
+        Check(Equals(profileType.GetProperty("AutoMaximizeWindow")!.GetValue(normalized), false) &&
+              Equals(profileType.GetProperty("AutoResize")!.GetValue(normalized), false) &&
+              Equals(profileType.GetProperty("SmartSizing")!.GetValue(normalized), true) &&
+              Equals(profileType.GetProperty("ScaleFactor")!.GetValue(normalized), 100u),
+            "Sanitization must preserve explicit saved display choices, including 100 percent DPI.");
+        var windowPreferences = App.GetType("PureRDP.Configuration.GlobalWindowPreferences")!;
+        var freshWindow = Activator.CreateInstance(windowPreferences, true)!;
+        Check(windowPreferences.GetProperty("ControlBarDock")!.GetValue(freshWindow)!.ToString() == "Top",
+            "Unconfigured connection bars must start at the top.");
+        preferencesType.GetProperty("UseCommonSettings")!.SetValue(preferences, false);
         preferencesType.GetProperty("Connection")!.SetValue(preferences, sanitized);
         commonService.GetMethod("Apply", Static)!.Invoke(null, [source, preferences]);
         Check((int)profileType.GetProperty("Width")!.GetValue(source)! == 1110, "Disabled preferences must leave the connection unchanged.");

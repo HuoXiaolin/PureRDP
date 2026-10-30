@@ -181,19 +181,19 @@ internal sealed class ShortcutSettingsPage : SettingsPage
             RowCount = 11,
             AutoSize = true,
         };
-        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
+        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
         rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
 
         var title = new Label
         {
@@ -239,7 +239,7 @@ internal sealed class ShortcutSettingsPage : SettingsPage
             RowCount = 1,
             Margin = new Padding(0),
         };
-        effectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
+        effectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
         effectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         effectRow.Controls.Add(new Label
         {

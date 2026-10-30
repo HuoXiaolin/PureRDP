@@ -21,28 +21,22 @@ internal sealed class StartupSettingsPage : SettingsPage
 
     public StartupSettingsPage()
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(0, 8, 0, 0) };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.Controls.Add(new Label { Text = Title, AutoSize = true, Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), Margin = new Padding(0, 0, 0, 24) });
-        layout.Controls.Add(_enabled);
-        layout.Controls.Add(_silent);
-        layout.Controls.Add(new Label { Text = "已登记的自启动程序路径：", AutoSize = true, Margin = new Padding(0, 24, 0, 8) });
-        layout.Controls.Add(_registered);
-        layout.Controls.Add(new Label { Text = "当前程序路径：", AutoSize = true, Margin = new Padding(0, 20, 0, 8) });
-        layout.Controls.Add(new TextBox { Text = CurrentExecutable, ReadOnly = true, Multiline = true, Height = 72, Dock = DockStyle.Top, ScrollBars = ScrollBars.Vertical });
-        var repair = new ModernButton { Text = "修复路径", Width = 140, Height = 38, Margin = new Padding(0, 20, 0, 12) };
+        var layout = SettingsPageDesign.Stack();
+        var current = new TextBox { Text = CurrentExecutable, ReadOnly = true, Multiline = true,
+            Height = 54, Dock = DockStyle.Top, ScrollBars = ScrollBars.Vertical };
+        var repair = new ModernButton { Text = "修复路径", Width = 140, Height = 34 };
         repair.Click += (_, _) =>
         {
-            if (!_enabled.Checked)
-            {
-                _message.Text = "请先勾选开机自启动，再修复路径。";
-                return;
-            }
+            if (!_enabled.Checked) { _message.Text = "请先勾选开机自启动，再修复路径。"; return; }
             ApplyStartup(force: true);
         };
-        layout.Controls.Add(repair);
-        layout.Controls.Add(_message);
-        layout.Controls.Add(new Label { Text = "开关点击“保存并应用”后生效。修复路径立即更新为当前程序位置。\n仅设置当前 Windows 用户，不随 JSON 配置导入或导出。", AutoSize = true, Margin = new Padding(0, 16, 0, 0) });
+        SettingsPageDesign.Add(layout, SettingsPageDesign.Section("启动方式", _enabled, _silent,
+            SettingsPageDesign.Note("开关点击“保存并应用”后生效，仅设置当前 Windows 用户。")));
+        SettingsPageDesign.Add(layout, SettingsPageDesign.Section("启动路径",
+            SettingsPageDesign.Note("已登记的自启动程序路径"), _registered,
+            SettingsPageDesign.Note("当前程序路径"), current, SettingsPageDesign.Actions(repair),
+            SettingsPageDesign.Note("修复路径立即更新为当前程序位置，不随 JSON 配置导入或导出。")));
+        SettingsPageDesign.Add(layout, _message);
         Controls.Add(layout);
         ReadRegistration();
         _enabled.CheckedChanged += (_, _) => _changed = true;

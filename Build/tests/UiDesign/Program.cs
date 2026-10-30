@@ -56,6 +56,9 @@ internal static class Program
                 "Missing designer serialization metadata: " + entry.Item1 + "." + entry.Item2);
         }
         var settings = New("Configuration.GlobalSettings");
+        // This badge scenario starts from an explicitly saved disabled state.
+        var proxyPreferences = settings.GetType().GetProperty("RdpProxy")!.GetValue(settings)!;
+        proxyPreferences.GetType().GetProperty("UseCommonSettings")!.SetValue(proxyPreferences, false);
         using var global = (Form)New("UI.GlobalSettingsForm", settings);
         var pages = (IList)Field(global, "_pages");
         Check(pages.Count == 9, "Global settings must expose all nine pages including file opening.");
@@ -319,6 +322,14 @@ internal static class Program
         using var card = (Control)New("UI.ConnectionCardControl", connection);
         canvas.Controls.Clear(); canvas.Controls.Add(card); card.Location = new Point(24, 24);
         Render(canvas, "DeviceCard");
+        card.GetType().GetMethod("SurfaceMouseEnter", Members)!.Invoke(card, new object?[] { card, EventArgs.Empty });
+        Render(canvas, "DeviceCard-Hover");
+        card.GetType().GetMethod("SurfaceMouseLeave", Members)!.Invoke(card, new object?[] { card, EventArgs.Empty });
+        card.Focus();
+        Render(canvas, "DeviceCard-Selected");
+        ((Control)Field(card, "_editButton")).Focus();
+        Render(canvas, "DeviceCard-ChildFocus");
+        canvas.ActiveControl = null;
         foreach (var previewEnabled in new[] { false, true })
         foreach (var modeName in new[] { "Cards", "Horizontal", "List" })
         {
@@ -416,7 +427,7 @@ internal static class Program
             var rowColumns = new[] { "_titleLabel", "_hostLabel", "_metaLabel", "_hintLabel", "_qualityLabel" }
                 .Select(name => (Control)Field(card, name)).Where(c => c.Visible).ToArray();
             foreach (var column in rowColumns)
-                Check(column.Width > 0 && column.Right < actions.Left && column.Top == 14,
+                Check(column.Width > 0 && column.Right < actions.Left && column.Top == rowColumns[0].Top && column.Bottom <= card.Height,
                     "List columns must fit on one baseline before actions at width " + rowWidth);
             for (var i = 1; i < rowColumns.Length; i++)
                 Check(rowColumns[i - 1].Right <= rowColumns[i].Left,

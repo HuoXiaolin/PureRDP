@@ -77,7 +77,7 @@ internal static class Program
                             "List must fit the viewport without forcing a 1200px row.");
                     var fields = new[] { "_titleLabel", "_hostLabel", "_metaLabel", "_hintLabel", "_qualityLabel" }
                         .Select(name => (Control)Field(row, name)).ToArray();
-                    Check(fields.Select(field => field.Top).Distinct().Count() == 1 && row.Height == 56,
+                    Check(fields.Select(field => field.Top).Distinct().Count() == 1 && row.Height == 48,
                         "List view must retain a compact single-line field baseline.");
                     Check(fields.All(field => field.Height == 28), "List fields must not wrap onto a second row.");
                 }

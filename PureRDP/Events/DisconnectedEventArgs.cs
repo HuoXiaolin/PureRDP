@@ -45,6 +45,12 @@ public class DisconnectedEventArgs : EventArgs
     public bool IsRemoteShutdown => ExtendedReasonCode == DisconnectReasonCodeExt.ServerShutdown;
 
     /// <summary>
+    /// The server explicitly reported that another connection took over this session.
+    /// This is terminal for the old client, not a transport failure to retry.
+    /// </summary>
+    public bool IsSessionReplaced => ExtendedReasonCode == DisconnectReasonCodeExt.ReplacedByOtherConnection;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="DisconnectedEventArgs"/> class.
     /// </summary>
     /// <param name="errorCode">The disconnect reason code.</param>

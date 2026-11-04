@@ -62,6 +62,7 @@ public partial class FormRdpClient : Form
     private bool _launchedFromLibrary;
     private bool _remoteChromeActive;
     private bool _sessionClosing;
+    private bool _sessionReplaced;
     private bool _applyConnectionWindowSizeAfterConnect;
     private bool _remoteResizeQueued;
     private bool _suppressRemoteResizeAfterRestore;
@@ -2566,6 +2567,11 @@ public partial class FormRdpClient : Form
 
     private void ShowDisconnectStatus(DisconnectedEventArgs e)
     {
+        if (e.IsSessionReplaced)
+        {
+            NotifySessionReplaced(_appSettings.Connection.DisplayName ?? _appSettings.Connection.Hostname ?? "远程桌面");
+            return;
+        }
         var message = $"""
             连接已断开：{e.ReasonCode:G} ({e.ReasonCode:D}) / {e.ExtendedReasonCode:G} ({e.ExtendedReasonCode:D})
 
@@ -2573,6 +2579,42 @@ public partial class FormRdpClient : Form
             """;
 
         _connectionLibraryPanel?.ShowStatus(e.IsIntentionalDisconnect ? null : message.Trim());
+    }
+
+    private void NotifySessionReplaced(string target)
+    {
+        if (IsDisposed || _allowApplicationExit) return;
+        var message = $"{target} 已被另一连接接管，本连接已自动关闭并停止重连。";
+        _connectionLibraryPanel?.ShowStatus(message);
+        if (_trayIcon == null) return;
+        _trayIcon.BalloonTipTitle = "PureRDP · 连接已被接管";
+        _trayIcon.BalloonTipText = message;
+        _trayIcon.BalloonTipIcon = ToolTipIcon.Info;
+        if (_trayIcon.Visible) _trayIcon.ShowBalloonTip(5000);
+    }
+
+    private void CloseReplacedSession()
+    {
+        // Latch this before queuing Close: a late retry or duplicate native
+        // callback must never reclaim the session from its new owner.
+        if (_sessionClosing || IsDisposed) return;
+        _sessionClosing = true;
+        _sessionReplaced = true;
+        _appSettings.Connection.NativeFallback?.CancelIfPending();
+        StopAutomaticReconnect();
+        HideConnectingMessage();
+        var owner = _managementWindow;
+        var target = string.IsNullOrWhiteSpace(_appSettings.Connection.DisplayName)
+            ? _appSettings.Connection.Hostname ?? "远程桌面" : _appSettings.Connection.DisplayName;
+        void CloseAndNotify()
+        {
+            if (!IsDisposed) Close();
+            // Notify from the surviving console after the old HWND is gone.
+            // A tray notice does not block closing or steal the new session's focus.
+            owner?.NotifySessionReplaced(target);
+        }
+        if (IsHandleCreated) BeginInvoke((Action)CloseAndNotify);
+        else CloseAndNotify();
     }
     private void LoadAndApplyWindowSettings()
     {
@@ -3265,6 +3307,17 @@ public partial class FormRdpClient : Form
         // shortcut-hook refresh on reconnect.
         _appliedKeyboardMode = null;
 
+        if (e.IsSessionReplaced)
+        {
+            _appSettings.Connection.NativeFallback?.CancelIfPending();
+            StopAutomaticReconnect();
+            if (_isSessionWindow)
+            {
+                CloseReplacedSession();
+                return;
+            }
+        }
+
         if (_isSessionWindow && e.IsRemoteShutdown)
         {
             // A reported shutdown is terminal, unlike a reboot or transport
@@ -3600,7 +3653,9 @@ public partial class FormRdpClient : Form
                     management._allSessionMinimizePreferred = null;
                 }
                 management.ArrangeSessions();
-                management.QueueSessionCloseRecovery();
+                // A replacement belongs to the new client. Do not activate
+                // the old console or a sibling over that client's window.
+                if (!_sessionReplaced) management.QueueSessionCloseRecovery();
                 if (management._sessionWindows.Count == 0 && management._previewSessions.Count == 0)
                     management.QueueIdleMemoryCleanup();
             }

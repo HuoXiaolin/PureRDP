@@ -15,11 +15,11 @@ internal static class Program
         _checks++;
     }
 
-    private static FormRdpClient Session()
+    private static FormRdpClient Session(FormRdpClient? management = null)
     {
         var type = typeof(FormRdpClient);
         var window = (FormRdpClient)Activator.CreateInstance(type, Members, null,
-            new object?[] { Array.Empty<string>(), true, null }, null)!;
+            new object?[] { Array.Empty<string>(), true, management }, null)!;
         // Remove settings persistence and startup, not disconnect handling.
         // These tests never log in, register shortcuts or save user settings.
         window.Shown -= (EventHandler)type.GetMethod("FormRdpClient_Shown", Members)!.CreateDelegate(typeof(EventHandler), window);
@@ -31,6 +31,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        TestSessionReplacement();
         TestFallbackCancellation();
         TestInlineRetries();
         TestImportedPasswordFailure();
@@ -75,6 +76,106 @@ internal static class Program
             new DisconnectedEventArgs(DisconnectReasonCode.ByServer, DisconnectReasonCodeExt.ServerShutdown, null, true) });
         Check(!(bool)Field(internalReconnect, "_sessionClosing"), "Internal client reconnect notifications must remain ignored.");
         Console.WriteLine($"PASS: {_checks} shutdown-disconnect checks; simulated reason codes, no RDP login.");
+    }
+
+    private static void TestSessionReplacement()
+    {
+        var type = typeof(FormRdpClient);
+        var disconnected = type.GetMethod("RdpService_Disconnected", Members)!;
+        foreach (var reason in new[] { DisconnectReasonCode.NoInfo, DisconnectReasonCode.RemoteByUser,
+            DisconnectReasonCode.ByServer, DisconnectReasonCode.ConnectionTimedOut })
+            Check(new DisconnectedEventArgs(reason, DisconnectReasonCodeExt.ReplacedByOtherConnection, null, false).IsSessionReplaced,
+                "Server-reported replacement must take priority over the basic transport reason.");
+        foreach (var extended in new[] { DisconnectReasonCodeExt.NoInfo, DisconnectReasonCodeExt.ServerShutdown,
+            DisconnectReasonCodeExt.ServerRestart, DisconnectReasonCodeExt.ServerIdleTimeout, (DisconnectReasonCodeExt)999 })
+            Check(!new DisconnectedEventArgs(DisconnectReasonCode.ConnectionTimedOut, extended, "replaced by another connection", false).IsSessionReplaced,
+                "Descriptions and unrelated codes must not be treated as a session takeover.");
+
+        foreach (var pendingRetry in new[] { false, true })
+        foreach (var external in new[] { false, true })
+        foreach (var preview in new[] { false, true })
+        {
+            // A session-only fixture owner avoids startup scanning, a visible
+            // tray icon, settings persistence and actual RDP connections.
+            using var owner = Session();
+            using var sibling = Session();
+            using var window = Session(owner);
+            using var library = (Control)Activator.CreateInstance(type.Assembly.GetType("PureRDP.UI.ConnectionLibraryPanel")!, true)!;
+            using var tray = new NotifyIcon { Visible = false };
+            Set(owner, "_connectionLibraryPanel", library);
+            Set(owner, "_trayIcon", tray);
+            var sessions = (System.Collections.IList)Field(owner, "_sessionWindows");
+            sessions.Add(window); sessions.Add(sibling);
+            var status = (Label)Field(library, "_statusLabel");
+            var notices = 0;
+            status.TextChanged += (_, _) =>
+            {
+                if (!status.Text.Contains("已被另一连接接管")) return;
+                Check(window.IsDisposed, "The old connection must close before its takeover notice is delivered.");
+                notices++;
+            };
+            var application = Field(window, "_appSettings");
+            application.GetType().GetProperty("IsExternalConnection")!.SetValue(application, external);
+            var profile = application.GetType().GetProperty("Connection")!.GetValue(application)!;
+            profile.GetType().GetProperty("Hostname")!.SetValue(profile, "example.invalid");
+            profile.GetType().GetProperty("DisplayName")!.SetValue(profile, "接管回归设备");
+            var fallbackType = type.Assembly.GetType("PureRDP.Services.NativeRdpFallback")!;
+            using var fallback = (IDisposable)fallbackType.GetMethod("Capture", Members | BindingFlags.Static)!
+                .Invoke(null, new object[] { application, Array.Empty<string>() })!;
+            profile.GetType().GetProperty("NativeFallback")!.SetValue(profile, fallback);
+            window.Show();
+            Control? retry = null;
+            System.Windows.Forms.Timer? timer = null;
+            if (pendingRetry)
+            {
+                type.GetMethod("BeginAutomaticReconnect", Members)!.Invoke(window, new object[] { "synthetic transport failure" });
+                retry = (Control)Field(window, "_reconnectDialog");
+                timer = (System.Windows.Forms.Timer)Field(retry, "_timer");
+                Set(window, "_automaticReconnectAttemptInProgress", true);
+            }
+            Set(window, "_previewOnly", preview);
+            var replaced = new DisconnectedEventArgs(DisconnectReasonCode.ByServer,
+                DisconnectReasonCodeExt.ReplacedByOtherConnection, null, false);
+            disconnected.Invoke(window, new object?[] { null, replaced });
+            Check((bool)Field(window, "_sessionClosing") && (bool)Field(window, "_sessionReplaced"),
+                "Takeover must immediately latch terminal state before the callback returns.");
+            Check(!(bool)Field(window, "_automaticReconnectActive") && !(bool)Field(window, "_automaticReconnectAttemptInProgress") &&
+                (int)Field(window, "_automaticReconnectAttempts") == 0,
+                "Takeover must cancel countdowns and retries already in progress.");
+            Check(retry == null || retry.IsDisposed && timer?.Enabled == false,
+                "Takeover must release the reconnect surface and stop its timer.");
+            Check(!(bool)fallbackType.GetMethod("TryClaim", Members)!.Invoke(fallback, null)!,
+                "Takeover before LoginComplete must cancel native fallback as well.");
+            type.GetMethod("ReconnectDialog_RetryRequested", Members)!.Invoke(window, new object[] { 1 });
+            Check(!(bool)Field(window, "_automaticReconnectActive") && !(bool)Field(window, "_automaticReconnectAttemptInProgress"),
+                "A late retry callback must not restart a replaced session.");
+            disconnected.Invoke(window, new object?[] { null, replaced });
+            Application.DoEvents();
+            Check(window.IsDisposed && !sessions.Contains(window), "Only the replaced window must be removed.");
+            Check(!owner.IsDisposed && !sibling.IsDisposed && sessions.Contains(sibling),
+                "Takeover must leave the console and other connections alive.");
+            Check(notices == 1 && status.Text.Contains("接管回归设备") && tray.BalloonTipText == status.Text &&
+                tray.BalloonTipIcon == ToolTipIcon.Info,
+                "One device-specific notice must remain in the console and be prepared for the tray.");
+            status.Text = "later status";
+            disconnected.Invoke(window, new object?[] { null, replaced });
+            Application.DoEvents();
+            Check(notices == 1 && status.Text == "later status", "Duplicate takeover events after closing must not repeat notifications.");
+        }
+
+        foreach (var extended in new[] { DisconnectReasonCodeExt.NoInfo, DisconnectReasonCodeExt.ServerRestart, (DisconnectReasonCodeExt)999 })
+        {
+            using var window = Session();
+            disconnected.Invoke(window, new object?[] { null,
+                new DisconnectedEventArgs(DisconnectReasonCode.ConnectionTimedOut, extended, null, false) });
+            Check(!(bool)Field(window, "_sessionClosing") && (bool)Field(window, "_automaticReconnectActive"),
+                "Transport failures and server restarts must retain normal automatic retry behavior.");
+            type.GetMethod("StopAutomaticReconnect", Members)!.Invoke(window, null);
+        }
+        using var internalReconnect = Session();
+        disconnected.Invoke(internalReconnect, new object?[] { null,
+            new DisconnectedEventArgs(DisconnectReasonCode.ByServer, DisconnectReasonCodeExt.ReplacedByOtherConnection, null, true) });
+        Check(!(bool)Field(internalReconnect, "_sessionClosing"), "Internal reconnect events must not trigger takeover handling.");
     }
 
     private static void TestFallbackCancellation()

@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.IO.Pipes;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using PureRDP.Events;
 using PureRDP.Models;
 using PureRDP.UI;
@@ -7,6 +10,8 @@ internal static class Program
 {
     private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     private static int _checks;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageW(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
     private static object Field(object target, string name) => target.GetType().GetField(name, Members)!.GetValue(target)!;
     private static void Set(object target, string name, object value) => target.GetType().GetField(name, Members)!.SetValue(target, value);
     private static void Check(bool value, string message)
@@ -29,8 +34,17 @@ internal static class Program
     }
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--local-shutdown-child")
+        {
+            RunLocalShutdownChild(int.Parse(args[1]));
+            return;
+        }
+        TestBoundedLogFlush();
+        TestRelayDisposal();
+        TestCancelledLocalShutdown();
+        TestConfirmedLocalShutdown();
         TestSessionReplacement();
         TestFallbackCancellation();
         TestInlineRetries();
@@ -76,6 +90,190 @@ internal static class Program
             new DisconnectedEventArgs(DisconnectReasonCode.ByServer, DisconnectReasonCodeExt.ServerShutdown, null, true) });
         Check(!(bool)Field(internalReconnect, "_sessionClosing"), "Internal client reconnect notifications must remain ignored.");
         Console.WriteLine($"PASS: {_checks} shutdown-disconnect checks; simulated reason codes, no RDP login.");
+    }
+
+    private static FormRdpClient Management()
+    {
+        var window = new FormRdpClient(Array.Empty<string>());
+        var type = typeof(FormRdpClient);
+        window.Shown -= (EventHandler)type.GetMethod("FormRdpClient_Shown", Members)!.CreateDelegate(typeof(EventHandler), window);
+        window.FormClosing -= (FormClosingEventHandler)type.GetMethod("FormRdpClient_FormClosing", Members)!.CreateDelegate(typeof(FormClosingEventHandler), window);
+        ((NotifyIcon)Field(window, "_trayIcon")).Visible = false;
+        _ = window.Handle;
+        return window;
+    }
+
+    private static void TestBoundedLogFlush()
+    {
+        var logs = typeof(FormRdpClient).Assembly.GetType("PureRDP.Services.ConnectionLogService")!;
+        var pending = logs.GetField("_pending", Members | BindingFlags.Static)!;
+        var original = pending.GetValue(null);
+        var blocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // A regression to an unlimited wait must fail rather than hang this suite.
+        _ = Task.Delay(3000).ContinueWith(_ => blocked.TrySetResult());
+        try
+        {
+            pending.SetValue(null, blocked.Task);
+            var watch = Stopwatch.StartNew();
+            logs.GetMethod("Flush", Members | BindingFlags.Static)!.Invoke(null, null);
+            Check(watch.Elapsed < TimeSpan.FromSeconds(1.25) && !blocked.Task.IsCompleted,
+                "Exit log flush must return within its budget while disk work is stalled.");
+            pending.SetValue(null, Task.FromException(new IOException("synthetic write failure")));
+            logs.GetMethod("Flush", Members | BindingFlags.Static)!.Invoke(null, null);
+            Check(true, "A failed log write must not prevent exit.");
+        }
+        finally
+        {
+            pending.SetValue(null, original);
+            blocked.TrySetResult();
+        }
+    }
+
+    private static void TestRelayDisposal()
+    {
+        var relayType = typeof(FormRdpClient).Assembly.GetType("PureRDP.Program+SingleInstanceRelay")!;
+        foreach (var partialPayload in new[] { false, true })
+        {
+            var pipeName = "PureRDP.ShutdownTests." + Guid.NewGuid().ToString("N");
+            var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var blockedUi = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Func<string[], Task> callback = _ => { received.TrySetResult(); return blockedUi.Task; };
+            var relay = (IDisposable)Activator.CreateInstance(relayType, Members, null,
+                new object[] { pipeName, callback }, null)!;
+            var disposed = false;
+            try
+            {
+                using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                client.Connect(3000);
+                using var writer = new StreamWriter(client, leaveOpen: true) { AutoFlush = true };
+                if (partialPayload)
+                    writer.Write("[");
+                else
+                {
+                    writer.WriteLine("[]");
+                    received.Task.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+                }
+                var watch = Stopwatch.StartNew();
+                relay.Dispose();
+                disposed = true;
+                Check(watch.Elapsed < TimeSpan.FromSeconds(1.25),
+                    "The command relay must stop promptly with partial input or an unresponsive UI callback.");
+            }
+            finally
+            {
+                blockedUi.TrySetResult();
+                if (!disposed) relay.Dispose();
+            }
+        }
+    }
+
+    private static void TestCancelledLocalShutdown()
+    {
+        using var management = Management();
+        using var connection = Session(management);
+        using var preview = Session(management);
+        Set(preview, "_previewOnly", true);
+        var sessions = (System.Collections.IList)Field(management, "_sessionWindows");
+        sessions.Add(connection);
+        sessions.Add(preview);
+        var closingEvents = 0;
+        foreach (var window in new[] { management, connection, preview })
+        {
+            window.FormClosing += (_, _) => closingEvents++;
+            Set(window, "_automaticReconnectActive", true);
+            Set(window, "_automaticReconnectAttempts", 3);
+            foreach (var flags in new[] { 0u, 1u, 0x80000000u, 0xc0000001u })
+            {
+                var options = new IntPtr(unchecked((int)flags));
+                var watch = Stopwatch.StartNew();
+                var consent = SendMessageW(window.Handle, 0x0011, IntPtr.Zero, options);
+                Check(consent != IntPtr.Zero && watch.Elapsed < TimeSpan.FromSeconds(1),
+                    "Every top-level RDP window must immediately consent to shutdown, logoff and Restart Manager inquiries.");
+                Check(SendMessageW(window.Handle, 0x0016, IntPtr.Zero, options) == IntPtr.Zero,
+                    "A cancelled session ending must return normally.");
+                Check(!window.IsDisposed && !(bool)Field(window, "_sessionClosing") &&
+                    (bool)Field(window, "_automaticReconnectActive") && (int)Field(window, "_automaticReconnectAttempts") == 3,
+                    "Inquiries and cancelled shutdowns must preserve the window and reconnect state.");
+            }
+        }
+        Check(closingEvents == 0, "A shutdown inquiry must not run FormClosing, native disposal or settings persistence.");
+    }
+
+    private static void TestConfirmedLocalShutdown()
+    {
+        foreach (var target in new[] { 0, 1, 2 })
+        {
+            var start = new ProcessStartInfo(Environment.ProcessPath!)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            if (Path.GetFileNameWithoutExtension(Environment.ProcessPath!).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+            start.ArgumentList.Add("--local-shutdown-child");
+            start.ArgumentList.Add(target.ToString());
+            using var child = Process.Start(start)!;
+            try
+            {
+                var ready = child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(15)).GetAwaiter().GetResult();
+                if (ready != "ready")
+                {
+                    var detail = child.StandardError.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+                    throw new InvalidOperationException($"Shutdown helper startup failed: {ready} {detail}");
+                }
+                Check(true, "The isolated shutdown helper must create its native test windows.");
+                var watch = Stopwatch.StartNew();
+                child.StandardInput.WriteLine("end");
+                child.StandardInput.Flush();
+                Check(child.WaitForExit(2000), "Confirmed shutdown must exit with stalled logs and blocked native cleanup.");
+                Check(child.ExitCode == 0, "Confirmed shutdown must bypass normal close/dispose paths and exit successfully.");
+                Console.WriteLine($"Local shutdown target={target}; exit={watch.Elapsed.TotalMilliseconds:F0} ms; stalled log queue, held native cleanup gates.");
+            }
+            finally
+            {
+                // This is only the helper just created by this test, on the inherited test desktop.
+                if (!child.HasExited) { child.Kill(entireProcessTree: true); child.WaitForExit(); }
+            }
+        }
+    }
+
+    private static void RunLocalShutdownChild(int target)
+    {
+        var logs = typeof(FormRdpClient).Assembly.GetType("PureRDP.Services.ConnectionLogService")!;
+        logs.GetField("_pending", Members | BindingFlags.Static)!.SetValue(null,
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task);
+        using var management = Management();
+        using var connection = Session(management);
+        using var preview = Session(management);
+        Set(preview, "_previewOnly", true);
+        var sessions = (System.Collections.IList)Field(management, "_sessionWindows");
+        sessions.Add(connection);
+        sessions.Add(preview);
+        var windows = new[] { management, connection, preview };
+        foreach (var window in windows)
+        {
+            // Exercise the production close handler while making native cleanup
+            // unable to progress. The fast system-shutdown path must avoid it.
+            window.FormClosing += (FormClosingEventHandler)typeof(FormRdpClient)
+                .GetMethod("FormRdpClient_FormClosing", Members)!.CreateDelegate(typeof(FormClosingEventHandler), window);
+            window.Show();
+            ((Control)Field(window, "panelRdp")).Visible = true;
+            Application.DoEvents();
+            var service = Field(window, "_rdpService");
+            service.GetType().GetMethod("CreateRdpControlAndClient", Members)!.Invoke(service, null);
+            ((SemaphoreSlim)Field(service, "_connectionSemaphore")).Wait();
+            window.FormClosed += (_, _) => Environment.Exit(73);
+        }
+        Console.WriteLine("ready");
+        Console.Out.Flush();
+        if (Console.ReadLine() != "end") Environment.Exit(74);
+        Check(SendMessageW(windows[target].Handle, 0x0011, IntPtr.Zero, IntPtr.Zero) != IntPtr.Zero,
+            "The production window must consent before confirmed shutdown.");
+        SendMessageW(windows[target].Handle, 0x0016, (IntPtr)1, IntPtr.Zero);
+        Environment.Exit(75); // A confirmed ending must terminate the whole helper process.
     }
 
     private static void TestSessionReplacement()

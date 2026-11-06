@@ -1,6 +1,6 @@
 param(
     [string]$version = '', [string]$Dotnet = '',
-    [ValidateSet('All', 'UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites', 'DailyVersion')]
+    [ValidateSet('All', 'UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'DisplaySizing', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites', 'DailyVersion')]
     [string]$Suite = 'All',
     [switch]$DesktopIsolated
 )
@@ -29,12 +29,15 @@ try {
         else { Join-Path $repo "outputs\ci-tests\SelectedSuite-$Suite" }
     New-Item -ItemType Directory -Path $reports -Force | Out-Null
     $results = @()
-    foreach ($name in @('UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites', 'DailyVersion')) {
+    foreach ($name in @('UpdateCheck', 'RdpHistory', 'ShortcutFirstPress', 'WindowMinimize', 'DisplaySizing', 'ShutdownDisconnect', 'StatusRefresh', 'UiDesign', 'Favorites', 'DailyVersion')) {
         if ($Suite -ne 'All' -and $name -ne $Suite) { continue }
         $watch = [Diagnostics.Stopwatch]::StartNew()
-        $project = Join-Path $repo "Build\tests\$name\$name.csproj"
+        $projectName = if ($name -eq 'DisplaySizing') { 'WindowMinimize' } else { $name }
+        $project = Join-Path $repo "Build\tests\$projectName\$projectName.csproj"
         $output = @(if ($name -eq 'DailyVersion') {
             & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $repo 'Build/tests/DailyVersion/DailyVersion.ps1') 2>&1 | ForEach-Object { "$_" }
+        } elseif ($name -eq 'DisplaySizing') {
+            & $script:DotnetCommand run --project $project -c Release --no-launch-profile -- --display-sizing 2>&1 | ForEach-Object { "$_" }
         } else {
             & $script:DotnetCommand run --project $project -c Release --no-launch-profile 2>&1 | ForEach-Object { "$_" }
         })

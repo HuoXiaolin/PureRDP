@@ -35,6 +35,8 @@ internal sealed class RdpClientService : IDisposable
     private readonly System.Windows.Forms.Timer _displayTimer = new() { Interval = 500 };
     private bool _loginComplete;
     private bool _smartSizingCanUpscale;
+    private bool _pictureLayoutQueued;
+    private System.Drawing.Size _fittedNativeDesktop;
     private bool _previewMode;
     private KeyboardMode _keyboardHookMode = KeyboardMode.OnLocalComputer;
     private bool _keyboardHookModeApplied;
@@ -75,11 +77,7 @@ internal sealed class RdpClientService : IDisposable
         if (_previewMode == enabled) return;
         _previewMode = enabled;
         _displayTimer.Stop();
-        if (_rdpClient != null)
-        {
-            try { _rdpClient.AdvancedSettings9.SmartSizing = enabled; }
-            catch (COMException exception) { ReportDisplay($"preview-sizing HRESULT=0x{exception.HResult:X8}"); }
-        }
+        EnablePictureFitting();
         if (!enabled) ResizeSessionToContainer();
     }
 
@@ -334,18 +332,81 @@ internal sealed class RdpClientService : IDisposable
         var size = new System.Drawing.Size(Math.Max(1, (int)Math.Floor(width * ratio)),
             Math.Max(1, (int)Math.Floor(height * ratio)));
         var bounds = new System.Drawing.Rectangle(0, 0, size.Width, size.Height);
+        // Keep native fitting active BEFORE changing the HWND size. Switching
+        // it off at a nominal 1:1 match can expose native scrollbars or leave
+        // the previous presenter size/zoom during a server display update.
+        // At 1:1 the fit is still 1:1; remote DPI and bitmap fitting are separate.
+        EnablePictureFitting();
         if (_rdpControl.Dock != DockStyle.None) _rdpControl.Dock = DockStyle.None;
         if (_rdpControl.Bounds != bounds) _rdpControl.Bounds = bounds;
+    }
+
+    private void EnablePictureFitting()
+    {
+        if (_rdpClient == null) return;
         try
         {
-            // A matching remote desktop should render pixel-for-pixel. Only
-            // scale when the complete desktop actually needs fitting (tiles,
-            // fixed zoom or a pending/unsupported remote-size update).
-            var requiresScaling = size.Width != width || size.Height != height;
-            if (_rdpClient.AdvancedSettings9.SmartSizing != requiresScaling)
-                _rdpClient.AdvancedSettings9.SmartSizing = requiresScaling;
+            if (!_rdpClient.AdvancedSettings9.SmartSizing)
+                _rdpClient.AdvancedSettings9.SmartSizing = true;
         }
         catch (COMException exception) { ReportDisplay($"picture-scale HRESULT=0x{exception.HResult:X8}"); }
+    }
+
+    private void RefreshNativePictureTransform()
+    {
+        var client = _rdpClient;
+        var desktop = _viewDesktop;
+        if (client == null || desktop.Width <= 0 || desktop.Height <= 0 ||
+            _fittedNativeDesktop == desktop) return;
+        // DesktopWidth and the child HWND can already have the new dimensions
+        // while the native presenter still fits using the previous aspect ratio.
+        // Merely reading SmartSizing=true does not invalidate that transform.
+        // Reapply it once per confirmed desktop, outside the native size event.
+        var settings = client.AdvancedSettings9;
+        try
+        {
+            settings.SmartSizing = false;
+        }
+        finally
+        {
+            settings.SmartSizing = true;
+        }
+        if (!ReferenceEquals(_rdpClient, client)) return;
+        _fittedNativeDesktop = desktop;
+        ReportDisplay($"picture-transform-reset desktop={desktop.Width}x{desktop.Height}");
+    }
+
+    private void QueuePictureLayoutRefresh()
+    {
+        var control = _rdpControl;
+        if (_pictureLayoutQueued || control is not { IsDisposed: false, IsHandleCreated: true }) return;
+        _pictureLayoutQueued = true;
+        try
+        {
+            control.BeginInvoke((Action)(() =>
+            {
+                // A disconnect/reconnect may replace this COM object before
+                // the posted callback runs. Never apply the old session's work.
+                if (!ReferenceEquals(_rdpControl, control)) return;
+                _pictureLayoutQueued = false;
+                if (Volatile.Read(ref _disposed) != 0 || control.IsDisposed || _displayUpdatesSuspended) return;
+                try
+                {
+                    RefreshPictureLayout();
+                    RefreshNativePictureTransform();
+                    control.Invalidate(false);
+                    if (_rdpClient != null)
+                        ReportDisplay($"display-applied desktop={_viewDesktop.Width}x{_viewDesktop.Height}; " +
+                            $"native={_rdpClient.DesktopWidth}x{_rdpClient.DesktopHeight}; " +
+                            $"container={_container.ClientSize.Width}x{_container.ClientSize.Height}; " +
+                            $"viewport={control.ClientSize.Width}x{control.ClientSize.Height}; dpi={_container.DeviceDpi}; " +
+                            $"smart-sizing={_rdpClient.AdvancedSettings9.SmartSizing}; " +
+                            $"scroll={_rdpClient.HorizontalScrollBarVisible},{_rdpClient.VerticalScrollBarVisible}");
+                }
+                catch (COMException exception) { ReportDisplay($"display-applied HRESULT=0x{exception.HResult:X8}"); }
+            }));
+        }
+        catch (InvalidOperationException) { _pictureLayoutQueued = false; }
     }
 
     internal void SetTileMode(bool enabled)
@@ -356,11 +417,7 @@ internal sealed class RdpClientService : IDisposable
             _tileDesktop = new System.Drawing.Size(_connectionSettings?.Width ?? (_rdpClient?.DesktopWidth > 0 ? _rdpClient.DesktopWidth : 1600),
                 _connectionSettings?.Height ?? (_rdpClient?.DesktopHeight > 0 ? _rdpClient.DesktopHeight : 900));
         _tileMode = enabled;
-        if (_rdpClient != null)
-        {
-            try { _rdpClient.AdvancedSettings9.SmartSizing = enabled || _previewMode || _connectionSettings?.SmartSizing == true; }
-            catch (COMException exception) { ReportDisplay($"tile-sizing HRESULT=0x{exception.HResult:X8}"); }
-        }
+        EnablePictureFitting();
         ResizeSessionToContainer();
     }
 
@@ -504,8 +561,10 @@ internal sealed class RdpClientService : IDisposable
 
         var rdpClient = (MsRdpClient10NotSafeForScripting?)_rdpControl.GetOcx();
         _rdpClient = rdpClient ?? throw new InvalidOperationException("Failed to create RDP client control.");
+        _fittedNativeDesktop = System.Drawing.Size.Empty;
         _rdpClient.AdvancedSettings9.ContainerHandledFullScreen = 1;
         ConfigurePictureUpscaling();
+        EnablePictureFitting();
         DisableNativeConnectionBar();
     }
 
@@ -533,6 +592,7 @@ internal sealed class RdpClientService : IDisposable
 
         var control = _rdpControl;
         var client = _rdpClient;
+        _pictureLayoutQueued = false;
         _container.Controls.Remove(control);
 
         try
@@ -714,7 +774,7 @@ internal sealed class RdpClientService : IDisposable
 
         // Local fitting also applies before OnLoginComplete. Dynamic desktop
         // updates and SmartSizing are complementary, not mutually exclusive.
-        _rdpClient.AdvancedSettings9.SmartSizing = false;
+        EnablePictureFitting();
 
         ((IMsRdpClientNonScriptable5)_rdpClient).UseMultimon = _connectionSettings.UseAllMonitors == true;
         LayoutPicture(initialWidth, initialHeight);
@@ -1117,10 +1177,11 @@ internal sealed class RdpClientService : IDisposable
         if (e.width <= 0 || e.height <= 0) return;
         _viewDesktop = new System.Drawing.Size(e.width, e.height);
         ReportDisplay($"remote-size={e.width}x{e.height}; container={_container.ClientSize.Width}x{_container.ClientSize.Height}");
-        // The server can change the Winlogon surface before OnLoginComplete.
-        // Track its actual geometry instead of only the requested profile size.
-        if (!_displayUpdatesSuspended)
-            RefreshPictureLayout();
+        // The notification is delivered inside native display processing.
+        // Resizing the ActiveX or changing SmartSizing here re-enters that
+        // processing before its presenter/scrollbars have accepted the new size.
+        // Apply the latest desktop on the next UI dispatch, including Winlogon.
+        QueuePictureLayoutRefresh();
     }
 
     private void OnNetworkStatusChanged(object? sender, IMsTscAxEvents_OnNetworkStatusChangedEvent e)

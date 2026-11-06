@@ -6,6 +6,8 @@
 ./Build/scripts/purerdp.test.ps1
 # 可选：指定已有 SDK 或只运行一组
 ./Build/scripts/purerdp.test.ps1 -Dotnet 'D:\Agant\toolchain\dotnet\dotnet.exe' -Suite WindowMinimize
+# 使用正式程序的 PerMonitorV2 DPI 模式检查原生显示控件
+./Build/scripts/purerdp.test.ps1 -Suite DisplaySizing
 ```
 
 统一入口默认创建不切换的独立 Windows 桌面，再启动构建和测试。窗口、最大化、最小化、模拟全屏等检查仍创建真实 HWND，但不会显示在当前使用的桌面。控制台输出和 XML/日志报告保持可用；无法创建隔离桌面时直接报错，不回退到前台执行。

@@ -3006,6 +3006,21 @@ public partial class FormRdpClient : Form
 
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == 0x0011) // WM_QUERYENDSESSION
+        {
+            // A shutdown inquiry can be cancelled by another application.
+            // Consent immediately and leave every connection running until
+            // Windows confirms that the session is actually ending.
+            m.Result = (IntPtr)1;
+            return;
+        }
+        if (m.Msg == 0x0016) // WM_ENDSESSION
+        {
+            m.Result = IntPtr.Zero;
+            if (m.WParam != IntPtr.Zero)
+                ExitForSystemShutdown();
+            return;
+        }
         if (TryHandleWindowMoveInput(ref m)) return;
         if (TryHandleWindowResizeInput(ref m)) return;
         if (m.Msg is 0x0215 or Interop.WM_CANCELMODE && (_windowMovePending || _windowMoveActive))
@@ -3109,6 +3124,31 @@ public partial class FormRdpClient : Form
         }
 
         base.WndProc(ref m);
+    }
+
+    private void ExitForSystemShutdown()
+    {
+        try
+        {
+            var management = _managementWindow ?? this;
+            var snapshots = management._sessionWindows.Prepend(management)
+                .Where(window => !window.IsDisposed && !window._previewOnly)
+                .Select(window => (Settings: window.CaptureWindowSettings(),
+                    Hostname: window._isSessionWindow ? window._appSettings.Connection.Hostname : null))
+                .ToArray();
+            // Persist managed snapshots on a worker with one process-wide wait
+            // budget, regardless of the number of windows. Native disconnect
+            // and COM disposal can stall, so let process termination release
+            // those resources after Windows has confirmed shutdown/logoff.
+            var persistence = ConnectionLogService.CompleteActiveSessions().ContinueWith(_ =>
+            {
+                foreach (var snapshot in snapshots)
+                    snapshot.Settings.Save(snapshot.Hostname);
+            }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+            persistence.WaitAsync(ConnectionLogService.ExitFlushTimeout).GetAwaiter().GetResult();
+        }
+        catch (Exception) { } // Shutdown must proceed even if optional persistence fails.
+        finally { Environment.Exit(0); }
     }
 
     [StructLayout(LayoutKind.Sequential)]

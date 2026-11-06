@@ -164,8 +164,8 @@ internal static class Program
                             await _onArguments(forwardedArgs).WaitAsync(_cancellation.Token).ConfigureAwait(false);
                     }
                     using var acknowledgement = new StreamWriter(server, new UTF8Encoding(false), 1024, leaveOpen: true);
-                    await acknowledgement.WriteLineAsync("accepted").ConfigureAwait(false);
-                    await acknowledgement.FlushAsync().ConfigureAwait(false);
+                    await acknowledgement.WriteLineAsync("accepted".AsMemory(), _cancellation.Token).ConfigureAwait(false);
+                    await acknowledgement.FlushAsync(_cancellation.Token).ConfigureAwait(false);
                     }
                     catch (IOException) when (!_cancellation.IsCancellationRequested)
                     {
@@ -182,10 +182,13 @@ internal static class Program
         public void Dispose()
         {
             _cancellation.Cancel();
-            try { _listener.GetAwaiter().GetResult(); }
+            try { _listener.WaitAsync(TimeSpan.FromMilliseconds(250)).GetAwaiter().GetResult(); }
             catch (OperationCanceledException) { }
             catch (IOException) { }
-            _cancellation.Dispose();
+            catch (TimeoutException) { }
+            // The listener may still be completing a cancelled I/O operation.
+            _ = _listener.ContinueWith(_ => _cancellation.Dispose(), CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
 }

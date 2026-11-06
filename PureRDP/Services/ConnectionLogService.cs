@@ -28,6 +28,7 @@ internal sealed class ConnectionLogEntry
 internal static class ConnectionLogService
 {
     private const int MaximumEntries = 5000;
+    internal static readonly TimeSpan ExitFlushTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly object Sync = new();
     private static readonly HashSet<string> ActiveIds = new();
     private static readonly object QueueSync = new();
@@ -64,6 +65,24 @@ internal static class ConnectionLogService
         _ = Enqueue(() => { CompleteCore(id, ended); return true; });
     }
 
+    public static Task CompleteActiveSessions()
+    {
+        var ended = DateTime.UtcNow;
+        return Enqueue(() =>
+        {
+            lock (Sync)
+            {
+                if (ActiveIds.Count == 0) return true;
+                var entries = LoadUnsafe();
+                foreach (var entry in entries)
+                    if (ActiveIds.Contains(entry.Id) && !entry.EndedAtUtc.HasValue)
+                        entry.EndedAtUtc = ended;
+                ActiveIds.Clear();
+                return SaveUnsafe(entries);
+            }
+        });
+    }
+
     public static void Heartbeat(string? id)
         => _ = Enqueue(() => { HeartbeatCore(id); return true; });
 
@@ -85,7 +104,8 @@ internal static class ConnectionLogService
     {
         Task pending;
         lock (QueueSync) pending = _pending;
-        try { pending.GetAwaiter().GetResult(); }
+        try { pending.WaitAsync(ExitFlushTimeout).GetAwaiter().GetResult(); }
+        catch (TimeoutException) { }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
         catch (Exception) { }

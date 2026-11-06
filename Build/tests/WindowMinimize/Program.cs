@@ -54,13 +54,23 @@ internal static class Program
     }
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+        if (args.Contains("--display-sizing"))
+        {
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            TestDynamicViewportTransitions();
+            TestPreLoginViewport();
+            TestConnectionViewportStability();
+            Console.WriteLine($"PASS: {_checks} per-monitor display checks; disconnected native controls, no RDP login.");
+            return;
+        }
         var failureFile = Path.Combine("outputs", "ci-tests", "window-assertion-failure.txt");
         if (File.Exists(failureFile)) File.Delete(failureFile);
         TestSilentStartupVisibility();
         TestExternalWindowIsolation();
+        TestDynamicViewportTransitions();
         TestPreLoginViewport();
         TestConnectionViewportStability();
         TestRoutingPacket();
@@ -451,6 +461,131 @@ internal static class Program
         }
     }
 
+    private static void TestDynamicViewportTransitions()
+    {
+        // Reproduce the reported 1920x1020 -> 1634x918 -> 1920x1020
+        // sequence with native ActiveX geometry, without a network connection.
+        using var host = new Form { AutoScaleMode = AutoScaleMode.None, ShowInTaskbar = false };
+        using var container = new Panel { Size = new Size(1920, 1020) };
+        host.Controls.Add(container);
+        host.Show();
+        var serviceType = typeof(FormRdpClient).Assembly.GetType("PureRDP.Services.RdpClientService")!;
+        var service = Activator.CreateInstance(serviceType, Members, null, new object[] { container }, null)!;
+        using var lifetime = (IDisposable)service;
+        var settingsType = typeof(FormRdpClient).Assembly.GetType("PureRDP.Configuration.ConnectionSettings")!;
+        var settings = Activator.CreateInstance(settingsType)!;
+        settingsType.GetProperty("AutoResize")!.SetValue(settings, true);
+        settingsType.GetProperty("AutoMaximizeWindow")!.SetValue(settings, false);
+        settingsType.GetProperty("ViewScaleFactor")!.SetValue(settings, (uint?)0);
+        settingsType.GetProperty("Width")!.SetValue(settings, 1600);
+        settingsType.GetProperty("Height")!.SetValue(settings, 900);
+        settingsType.GetProperty("Password")!.SetValue(settings, null);
+        serviceType.GetField("_connectionSettings", Members)!.SetValue(service, settings);
+        Call(service, "CreateRdpControlAndClient");
+        try
+        {
+            var client = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
+            var viewport = (Control)Field(service, "_rdpControl");
+            Console.WriteLine($"Display transition regression: host DPI={host.DeviceDpi}; container DPI={container.DeviceDpi}.");
+            void ReportSize(Size desktop)
+                => Call(service, "OnRemoteDesktopSizeChange", null!,
+                    new AxMSTSCLib.IMsTscAxEvents_OnRemoteDesktopSizeChangeEvent(desktop.Width, desktop.Height));
+            void CommitSize(Size desktop)
+            {
+                client.DesktopWidth = desktop.Width;
+                client.DesktopHeight = desktop.Height;
+            }
+            CommitSize(container.Size);
+            serviceType.GetField("_viewDesktop", Members)!.SetValue(service, container.Size);
+            Call(service, "RefreshPictureLayout");
+            Check(client.AdvancedSettings9.SmartSizing,
+                "Fit-to-window must remain enabled at 1:1 so a subsequent native display update cannot restore scrolling/old zoom.");
+            foreach (var size in new[]
+            {
+                new Size(1634, 918), new Size(1920, 1020), new Size(1634, 918),
+                new Size(1920, 1080), new Size(1634, 918), new Size(1280, 720),
+            })
+            {
+                container.Size = size;
+                var beforeEvent = viewport.Bounds;
+                ReportSize(size);
+                Check(viewport.Bounds == beforeEvent,
+                    "A native size callback must not change the ActiveX bounds before the native event has unwound.");
+                CommitSize(size); // native properties settle after event delivery
+                Pump();
+                Check(viewport.Bounds == new Rectangle(Point.Empty, size),
+                    $"Settled desktop must fill the viewport without retaining the previous rectangle: {size} / {viewport.Bounds}.");
+                Check(client.AdvancedSettings9.SmartSizing,
+                    "Restore/maximize/fullscreen transitions must never switch back to native scrolling mode.");
+                Check((Size)Field(service, "_fittedNativeDesktop") == size,
+                    "A confirmed new desktop must apply a native transform for the latest geometry.");
+                Check(client.HorizontalScrollBarVisible == 0 && client.VerticalScrollBarVisible == 0,
+                    "Fitted native control must not expose scrollbars.");
+            }
+
+            foreach (var mode in new[] { "SetTileMode", "SetPreviewMode" })
+            {
+                Call(service, mode, true);
+                Call(service, mode, false);
+                Check(client.AdvancedSettings9.SmartSizing && viewport.Size == container.ClientSize,
+                    $"Leaving {mode} must retain fitted one-to-one display without restoring native scrolling.");
+            }
+
+            // Repeated notifications retain the full, stable viewport.
+            var beforeDuplicate = viewport.Bounds;
+            ReportSize(container.Size);
+            Pump();
+            Check(viewport.Bounds == beforeDuplicate && client.AdvancedSettings9.SmartSizing,
+                "Duplicate remote-size events must not disturb the fitted viewport.");
+
+            // Several server notifications in one dispatch must use the last
+            // dimensions, even if the window changes again before layout runs.
+            ReportSize(new Size(1600, 900));
+            ReportSize(new Size(1024, 768));
+            CommitSize(new Size(1024, 768));
+            container.Size = new Size(800, 600);
+            Pump();
+            Check(viewport.Bounds == new Rectangle(0, 0, 800, 600) &&
+                (Size)Field(service, "_viewDesktop") == new Size(1024, 768),
+                "Coalesced native notifications must apply the latest desktop and current container together.");
+            var beforePause = viewport.Bounds;
+            Call(service, "SetDisplayUpdatesSuspended", true, false);
+            ReportSize(new Size(1600, 900));
+            CommitSize(new Size(1600, 900));
+            Pump();
+            Check(viewport.Bounds == beforePause, "A deferred layout must honor minimized/suspended state.");
+            Call(service, "SetDisplayUpdatesSuspended", false, true);
+            Check(viewport.Size == new Size(800, 450), "Resume must fit the latest full remote desktop, including its bottom edge.");
+
+            container.Size = new Size(1635, 919);
+            ReportSize(new Size(1634, 918));
+            CommitSize(new Size(1634, 918));
+            Pump();
+            Check(viewport.Width <= container.ClientSize.Width && viewport.Height <= container.ClientSize.Height &&
+                client.AdvancedSettings9.SmartSizing,
+                "Odd host dimensions must fit the even desktop without introducing scrollbars or clipping.");
+            Check(client.Connected == 0 && !(bool)Field(service, "_loginComplete"),
+                "Native geometry regressions must not connect, authenticate or resize a real remote desktop.");
+
+            // A posted callback must not touch a disposed or replacement COM object.
+            ReportSize(new Size(640, 480));
+            Call(service, "RemoveRdpControlAndClient");
+            Call(service, "CreateRdpControlAndClient");
+            var replacement = (Control)Field(service, "_rdpControl");
+            var replacementBounds = replacement.Bounds;
+            Pump();
+            Check(replacement.Bounds == replacementBounds, "An old queued layout must not alter a replacement ActiveX instance.");
+            ReportSize(new Size(800, 600));
+            Pump();
+            Check(!(bool)Field(service, "_pictureLayoutQueued") && replacement.Width <= container.Width,
+                "Replacing a control must also allow subsequent layout notifications to complete.");
+            ReportSize(new Size(640, 480));
+        }
+        finally { Call(service, "RemoveRdpControlAndClient"); }
+        Pump();
+        Check(!(bool)Field(service, "_pictureLayoutQueued"), "Removing a control must cancel its pending local display work.");
+    }
+
     private static void TestPreLoginViewport()
     {
         Console.WriteLine("Pre-login regression: creating isolated host.");
@@ -498,14 +633,14 @@ internal static class Program
         Console.WriteLine("Pre-login regression: configuring local desktop.");
         var client = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
         Call(service, "LayoutPicture", 800u, 600u);
-        Check(!client.AdvancedSettings9.SmartSizing,
-            "A one-to-one viewport must disable bitmap SmartSizing rather than resample an already matched desktop.");
+        Check(client.AdvancedSettings9.SmartSizing,
+            "A one-to-one viewport must retain native fitting so later size notifications cannot expose scrollbars.");
         Call(service, "LayoutPicture", 1600u, 900u);
         Check(client.AdvancedSettings9.SmartSizing,
             "A mismatched desktop must still fit completely without cropping while resolution is pending or unavailable.");
         Call(service, "LayoutPicture", 800u, 600u);
-        Check(!client.AdvancedSettings9.SmartSizing,
-            "Once the actual desktop reaches the viewport, local bitmap scaling must turn off again.");
+        Check(client.AdvancedSettings9.SmartSizing,
+            "Once the actual desktop reaches the viewport, fitting must remain enabled at a one-to-one ratio.");
         profile.GetType().GetProperty("AlternateShell")!.SetValue(profile, "fixture-remote-startup --ticket=example:token");
         profile.GetType().GetProperty("ShellWorkingDirectory")!.SetValue(profile, "C:\\fixture remote");
         Call(service, "ApplyRemoteStartupSettings");
@@ -594,8 +729,9 @@ internal static class Program
         Call(service, "SetDisplayUpdatesSuspended", false, true);
         Check(viewport.Size == Fitted(new Size(800, 600)), "Restoring a pre-login host must catch up its local viewport.");
         Call(service, "OnRemoteDesktopSizeChange", null!, new AxMSTSCLib.IMsTscAxEvents_OnRemoteDesktopSizeChangeEvent(1024, 512));
+        Pump();
         Check((Size)Field(service, "_viewDesktop") == new Size(1024, 512) && viewport.Size == Fitted(new Size(1024, 512)),
-            "Server-reported logon dimensions must immediately replace stale profile aspect ratios.");
+            "Server-reported logon dimensions must replace stale profile aspect ratios after native event dispatch.");
         service.GetType().GetField("_loginComplete", Members)!.SetValue(service, true);
         Call(service, "ContainerSizeChanged", null!, EventArgs.Empty);
         Check(timer.Enabled, "After login, the latest client size must enter normal dynamic-resolution negotiation.");

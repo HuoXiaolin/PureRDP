@@ -2688,10 +2688,14 @@ public partial class FormRdpClient : Form
     private void UpdateWindowTitle()
     {
         var title = "PureRDP";
-        if (!string.IsNullOrEmpty(_appSettings.RdpFilePath))
-            title = $"({Path.GetFileNameWithoutExtension(_appSettings.RdpFilePath)}) - {title}";
-        if (!string.IsNullOrEmpty(_appSettings.Connection.Hostname))
-            title = $"{_appSettings.Connection.DisplayName ?? _appSettings.Connection.Hostname} - {title}";
+        // The console also holds the last launch request after opening its session window.
+        if (_isSessionWindow)
+        {
+            if (!string.IsNullOrEmpty(_appSettings.RdpFilePath))
+                title = $"({Path.GetFileNameWithoutExtension(_appSettings.RdpFilePath)}) - {title}";
+            if (!string.IsNullOrEmpty(_appSettings.Connection.Hostname))
+                title = $"{_appSettings.Connection.DisplayName ?? _appSettings.Connection.Hostname} - {title}";
+        }
         Text = title;
     }
 

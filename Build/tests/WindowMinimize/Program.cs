@@ -69,6 +69,7 @@ internal static class Program
         var failureFile = Path.Combine("outputs", "ci-tests", "window-assertion-failure.txt");
         if (File.Exists(failureFile)) File.Delete(failureFile);
         TestSilentStartupVisibility();
+        TestProxyConsoleTitle();
         TestExternalWindowIsolation();
         TestDynamicViewportTransitions();
         TestPreLoginViewport();
@@ -748,6 +749,37 @@ internal static class Program
         }
     }
 
+    private static void TestProxyConsoleTitle()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.rdp");
+        try
+        {
+            File.WriteAllText(path, "full address:s:192.0.2.18:53389\r\n");
+            var args = new[] { "--proxy-connection", "--no-auto-connect", path };
+            using var console = new FormRdpClient(args);
+            // Exercise the normal console Shown and command-relay paths offline.
+            ((IDisposable)Field(console, "_availabilityScanner")).Dispose();
+            ((NotifyIcon)Field(console, "_trayIcon")).Visible = false;
+            console.Show();
+            Pump();
+            var settings = Field(console, "_appSettings");
+            Check((bool)settings.GetType().GetProperty("IsExternalConnection")!.GetValue(settings)! &&
+                (string?)settings.GetType().GetProperty("RdpFilePath")!.GetValue(settings) == path,
+                "The title check must load the supplied proxy RDP file.");
+            Check(console.Text == "PureRDP", $"Unexpected console caption on proxy startup: {console.Text}");
+
+            console.Hide();
+            File.WriteAllText(path, "full address:s:192.0.2.19:53389\r\n");
+            Call(console, "HandleSingleInstanceCommand", new object[] { args });
+            Pump();
+            var forwarded = Field(console, "_appSettings");
+            var profile = forwarded.GetType().GetProperty("Connection")!.GetValue(forwarded)!;
+            Check((string?)profile.GetType().GetProperty("Hostname")!.GetValue(profile) == "192.0.2.19:53389" &&
+                console.Visible && console.Text == "PureRDP", "A forwarded proxy file must reopen the console with its application caption.");
+        }
+        finally { File.Delete(path); }
+    }
+
     private static void TestExternalWindowIsolation()
     {
         using var manager = Window(null);
@@ -779,6 +811,11 @@ internal static class Program
             "Saved-device connections must retain their existing window reuse behavior.");
         External(first, true); External(manager, true);
         first.Show(); second.Show(); Pump();
+        secondProfile.GetType().GetProperty("DisplayName")!.SetValue(secondProfile, "Session B");
+        Call(first, "UpdateWindowTitle");
+        Call(second, "UpdateWindowTitle");
+        Check(first.Text == "broker.example.invalid:3391 - PureRDP" && second.Text == "Session B - PureRDP",
+            "Each connection window must display its own device name or endpoint in its caption.");
         Check(first.Handle != second.Handle && IsWindowVisible(first.Handle) && IsWindowVisible(second.Handle),
             "Two external handoffs must own distinct, simultaneously visible native windows.");
         Check((string?)firstProfile.GetType().GetProperty("LoadBalanceInfo")!.GetValue(firstProfile) == "fixture-ticket-a" &&

@@ -371,7 +371,7 @@ internal static class Program
             .GetProperty("Measuring", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null);
         card.GetType().GetMethod("SetConnectionQuality", Members)!.Invoke(card, new[] { quality });
         foreach (var previewOpen in new[] { false, true })
-        foreach (var cardWidth in new[] { 308, 440, 560, 900 })
+        foreach (var cardWidth in new[] { 224, 352, 448, 720 })
         {
             card.Width = cardWidth;
             card.GetType().GetProperty("PreviewOpen", Members)!.SetValue(card, previewOpen);
@@ -380,17 +380,21 @@ internal static class Program
             var telemetry = (Control)Field(card, "_qualityLabel");
             var preview = (Control)Field(card, "_preview");
             var actions = (Control)Field(card, "_actionPanel");
-            Check(title.Width >= 176 && title.Height == 30, "Card title needs a full single-line header.");
+            Check(title.Width >= TextRenderer.MeasureText(title.Text, title.Font).Width && title.Height >= title.Font.Height,
+                "Card title must fit a complete single-line header at the compact size.");
             var star = (Control)Field(card, "_pinButton");
-            Check(star.Left > title.Right && star.Right <= card.Width - 30,
+            Check(star.Left > title.Right && star.Right <= card.Width - 23,
                 "Favorite star must sit in the top-right without overlapping title or status.");
             Check(host.Top - title.Bottom <= 12, "Device details must not leave an empty band below identity.");
             Check(telemetry.Bottom <= actions.Top, "Compact telemetry must not overlap actions.");
             Check(((Label)telemetry).Text.Split('\n').Length == 2, "Card telemetry must use two compact rows.");
+            Check(telemetry.Text.Split('\n').All(line => TextRenderer.MeasureText(line, telemetry.Font,
+                    Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width <= telemetry.Width),
+                "Both telemetry lines must fit without wrapping in compact cards.");
             if (previewOpen)
             {
                 Check(Math.Abs(preview.Top - host.Top) <= 2 && preview.Bottom <= actions.Top, "Preview must align with the details region.");
-                Check(!telemetry.Bounds.IntersectsWith(preview.Bounds), "Telemetry must remain beside the preview.");
+                Check(!telemetry.Bounds.IntersectsWith(preview.Bounds), "The preview must leave both telemetry lines clear.");
                 Check(Math.Abs(preview.Width * 9 / 16 - preview.Height) <= 1, "Preview must retain 16:9 proportions.");
             }
             Render(card, $"CompactCard-{cardWidth}" + (previewOpen ? "-Preview" : ""));

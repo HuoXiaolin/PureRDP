@@ -627,16 +627,16 @@ internal sealed class ConnectionLibraryPanel : UserControl
     {
         _listHeader?.Invalidate();
         int Px(int value) => (int)Math.Round(value * DeviceDpi / 96.0);
-        // Cards use one to three equally-sized columns; row/list views fill
-        // the viewport instead of leaving an unused strip on the right.
+        // Divide the full viewport among the responsive columns.
         var available = _itemsPanel.ClientSize.Width - _itemsPanel.Padding.Horizontal;
         var columns = _viewMode == ConnectionLibraryViewMode.Cards
             ? Math.Clamp(available / Px(360), 1, 3) : 1;
+        var minimumWidth = Px(_viewMode == ConnectionLibraryViewMode.List ? UiDesignTokens.ListCardMinimumWidth : 280);
         var index = 0;
         foreach (var card in _itemsPanel.Controls.OfType<ConnectionCardControl>())
         {
             var cellWidth = available / columns + (index++ % columns < available % columns ? 1 : 0);
-            card.Width = Math.Max(Px(_viewMode == ConnectionLibraryViewMode.List ? UiDesignTokens.ListCardMinimumWidth : 280), cellWidth - card.Margin.Horizontal);
+            card.Width = Math.Max(minimumWidth, cellWidth - card.Margin.Horizontal);
             if (_listHeader != null) _listHeader.ItemWidth = card.Width;
         }
     }

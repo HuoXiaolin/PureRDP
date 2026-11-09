@@ -256,13 +256,9 @@ internal sealed class ConnectionCardControl : UserControl
         }
 
         var showPreview = !isList && !isHorizontal && PreviewEnabled && PreviewOpen;
-        Height = Px(isList ? 48 : isHorizontal ? 86 : 190);
         _preview.Visible = showPreview;
         _previewTitle.Visible = false;
         _previewButton.Visible = !isList && !isHorizontal && PreviewEnabled;
-        var actionWidth = isList ? 196 : isHorizontal ? 196 : 0;
-        var actionHeight = 34;
-        _actionPanel.SetBounds(0, 0, Math.Max(1, actionWidth), actionHeight);
         _hintLabel.Visible = true;
         LayoutActionPanel();
         Invalidate();
@@ -316,16 +312,17 @@ internal sealed class ConnectionCardControl : UserControl
         {
             MinimumSize = new Size(Px(210), Px(ViewMode == ConnectionLibraryViewMode.List ? 48 : 56));
             Margin = ViewMode == ConnectionLibraryViewMode.Cards ? new Padding(Px(UiDesignTokens.CardGap)) : new Padding(Px(6), Px(2), Px(6), Px(2));
-            Height = Px(ViewMode == ConnectionLibraryViewMode.List ? 48 :
-                ViewMode == ConnectionLibraryViewMode.Horizontal ? 86 : 190);
             LayoutActionPanel();
         }
         finally { ResumeLayout(false); }
         Invalidate(true);
     }
 
-    private int Px(int logical) => (int)Math.Round(logical * DeviceDpi / 96.0);
-    private int Logical(int physical) => (int)Math.Round(physical * 96.0 / DeviceDpi);
+    private double LayoutScale => DeviceDpi / 96.0 *
+        (ViewMode == ConnectionLibraryViewMode.Cards ? UiDesignTokens.CardViewScale : 1.0);
+
+    private int Px(int logical) => (int)Math.Round(logical * LayoutScale);
+    private int Logical(int physical) => (int)Math.Round(physical / LayoutScale);
     private void SetLogicalBounds(Control control, int x, int y, int width, int height)
         => control.SetBounds(Px(x), Px(y), Math.Max(1, Px(width)), Math.Max(1, Px(height)));
 
@@ -394,8 +391,10 @@ internal sealed class ConnectionCardControl : UserControl
         var width = Logical(Width);
         var isList = ViewMode == ConnectionLibraryViewMode.List && width >= 540;
         var isHorizontal = ViewMode == ConnectionLibraryViewMode.Horizontal && width >= 540;
-        foreach (var label in new[] { _titleLabel, _hostLabel, _metaLabel, _hintLabel, _qualityLabel })
-            ((CardTextLabel)label).SingleLine = ViewMode == ConnectionLibraryViewMode.List || ReferenceEquals(label, _titleLabel);
+        foreach (var label in new[] { _hostLabel, _metaLabel, _hintLabel })
+            ((CardTextLabel)label).SingleLine = ViewMode != ConnectionLibraryViewMode.Horizontal;
+        ((CardTextLabel)_titleLabel).SingleLine = true;
+        ((CardTextLabel)_qualityLabel).SingleLine = ViewMode == ConnectionLibraryViewMode.List;
         var qualityLines = (_connectionQuality?.ToDisplayText() ?? string.Empty).Split('\n');
         if (ViewMode == ConnectionLibraryViewMode.List)
         {
@@ -464,9 +463,10 @@ internal sealed class ConnectionCardControl : UserControl
         }
         if (ViewMode == ConnectionLibraryViewMode.Cards && PreviewEnabled && PreviewOpen)
         {
-            // Keep identity across the full header; telemetry must never squeeze
-            // a short device name into a stack of individual letters.
-            var previewWidth = Math.Max(110, Math.Min(170, (width - 48) / 2));
+            // On narrow cards leave the bottom two lines clear for connection metrics.
+            var telemetryBelowPreview = width < 384;
+            var maximumPreviewWidth = telemetryBelowPreview ? 112 : 170;
+            var previewWidth = Math.Max(110, Math.Min(maximumPreviewWidth, (width - 48) / 2));
             var previewLeft = width - 18 - previewWidth;
             var textWidthAvailable = Math.Max(40, previewLeft - 34);
             SetLogicalBounds(_avatarPanel, 18, 16, 30, 30);
@@ -474,7 +474,7 @@ internal sealed class ConnectionCardControl : UserControl
             SetLogicalBounds(_hostLabel, 18, 48, textWidthAvailable, 20);
             SetLogicalBounds(_metaLabel, 18, 70, textWidthAvailable, 18);
             SetLogicalBounds(_hintLabel, 18, 90, textWidthAvailable, 18);
-            SetLogicalBounds(_qualityLabel, 18, 112, textWidthAvailable, 32);
+            SetLogicalBounds(_qualityLabel, 18, 112, telemetryBelowPreview ? width - 36 : textWidthAvailable, 32);
             SetLogicalBounds(_previewTitle, previewLeft, 49, previewWidth, 18);
             SetLogicalBounds(_preview, previewLeft, 48, previewWidth, previewWidth * 9 / 16);
             return;

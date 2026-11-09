@@ -37,6 +37,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         var layoutType = Type("Services.ConnectionLibraryLayoutSettings");
         var json = "{\"viewMode\":\"Cards\",\"order\":[],\"autoTileSessions\":true}";
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
@@ -48,6 +49,37 @@ internal static class Program
         using var host = new Form { ClientSize = new Size(1160, 800), StartPosition = FormStartPosition.Manual, Location = new Point(-20000, -20000), ShowInTaskbar = false };
         using var panel = (Control)New("UI.ConnectionLibraryPanel", reader, write);
         host.Controls.Add(panel); host.Show(); Application.DoEvents();
+        int Px(int logical) => (int)Math.Round(logical * panel.DeviceDpi / 96.0);
+        var gridConnections = (IList)Field(panel, "_connections");
+        gridConnections.Clear();
+        foreach (var device in devices.Append(Device("示例四", "192.0.2.4"))) gridConnections.Add(device);
+        host.ClientSize = new Size(Math.Max(1100, Px(990)), Math.Max(680, Px(544)));
+        Call(panel, "RenderConnections");
+        Application.DoEvents();
+        var grid = (FlowLayoutPanel)Field(panel, "_itemsPanel");
+        var tiles = Cards(panel);
+        Check(tiles.Length == 4 && tiles.GroupBy(tile => tile.Top).Select(row => row.Count()).SequenceEqual(new[] { 2, 2 }),
+            $"The four-device console must show two rows of two cards at {panel.DeviceDpi} DPI.");
+        Check(!grid.VerticalScroll.Visible && !grid.HorizontalScroll.Visible &&
+            tiles.All(tile => grid.ClientRectangle.Contains(tile.Bounds)),
+            $"All four cards and their actions must fit the {host.ClientSize} console. Viewport={grid.ClientRectangle}, cards={string.Join(';', tiles.Select(tile => tile.Bounds))}");
+        foreach (var row in tiles.GroupBy(tile => tile.Top))
+        {
+            var first = row.First();
+            var last = row.Last();
+            Check(first.Left - first.Margin.Left == grid.Padding.Left &&
+                last.Right + last.Margin.Right == grid.ClientSize.Width - grid.Padding.Right,
+                $"Both card rows must fill the viewport from edge to edge at {panel.DeviceDpi} DPI.");
+        }
+        Check(tiles.All(tile => tile.Height == Px(152)), "Default cards must be 20% shorter than the previous 190-unit cards.");
+        Directory.CreateDirectory(Path.Combine("outputs", "ui-review"));
+        using (var screenshot = new Bitmap(host.Width, host.Height))
+        {
+            host.DrawToBitmap(screenshot, new Rectangle(Point.Empty, host.Size));
+            screenshot.Save(Path.Combine("outputs", "ui-review", "FourCompactCards.png"));
+        }
+        Console.WriteLine($"Four-card console: DPI={panel.DeviceDpi}; client={host.ClientSize}; card={tiles[0].Size}; all four visible.");
+        host.ClientSize = new Size(1160, 800);
         void Fill(Control target) { var connections = (IList)Field(target, "_connections"); connections.Clear(); foreach (var device in devices) connections.Add(device); Call(target, "RenderConnections"); }
         Fill(panel);
         var original = Cards(panel);
@@ -63,23 +95,24 @@ internal static class Program
             var flow = (Control)Field(panel, "_itemsPanel");
             var rows = Cards(panel);
             var availableWidth = flow.ClientSize.Width - flow.Padding.Horizontal;
-            var columnCount = view == 0 ? Math.Clamp(availableWidth / 360, 1, 3) : 1;
+            var columnCount = view == 0 ? Math.Clamp(availableWidth / Px(360), 1, 3) : 1;
             var rowIndex = 0;
             foreach (var row in rows)
             {
-                var expectedWidth = Math.Max(view == 2 ? 560 : 280,
-                    availableWidth / columnCount + (rowIndex++ % columnCount < availableWidth % columnCount ? 1 : 0) - row.Margin.Horizontal);
-                Check(row.Width == expectedWidth, "Device must fill its responsive grid cell or full row.");
+                var cellWidth = availableWidth / columnCount + (rowIndex++ % columnCount < availableWidth % columnCount ? 1 : 0);
+                var expectedWidth = Math.Max(Px(view == 2 ? 560 : 280), cellWidth - row.Margin.Horizontal);
+                Check(row.Width == expectedWidth,
+                    $"Device must fill the available column or row: view={view}, DPI={panel.DeviceDpi}, expected={expectedWidth}, actual={row.Width}.");
                 if (view == 2)
                 {
-                    if (availableWidth - row.Margin.Horizontal >= 560)
+                    if (availableWidth - row.Margin.Horizontal >= Px(560))
                         Check(row.Width + row.Margin.Horizontal == availableWidth,
                             "List must fit the viewport without forcing a 1200px row.");
                     var fields = new[] { "_titleLabel", "_hostLabel", "_metaLabel", "_hintLabel", "_qualityLabel" }
                         .Select(name => (Control)Field(row, name)).ToArray();
-                    Check(fields.Select(field => field.Top).Distinct().Count() == 1 && row.Height == 48,
+                    Check(fields.Select(field => field.Top).Distinct().Count() == 1 && row.Height == Px(48),
                         "List view must retain a compact single-line field baseline.");
-                    Check(fields.All(field => field.Height == 28), "List fields must not wrap onto a second row.");
+                    Check(fields.All(field => field.Height == Px(28)), "List fields must not wrap onto a second row.");
                 }
             }
             Check(view == 0 ? rows.GroupBy(row => row.Top).All(group => group.Count() <= columnCount) :
@@ -90,8 +123,9 @@ internal static class Program
             {
                 Check(rows.Take(columnCount).Select(row => row.Top).Distinct().Count() == 1,
                     "First card row must contain the expected responsive column count.");
-                Check(rows[0].Left + rows.Take(columnCount).Sum(row => row.Width + row.Margin.Horizontal) - rows[0].Margin.Left
-                    == flow.Padding.Left + availableWidth, "Card columns must use the entire available row width.");
+                var last = rows[columnCount - 1];
+                Check(last.Right + last.Margin.Right == flow.ClientRectangle.Right - flow.Padding.Right,
+                    "A full row of cards must reach the right inner margin.");
             }
             Directory.CreateDirectory(Path.Combine("outputs", "ui-review"));
             if (viewport == 1400)
@@ -116,7 +150,9 @@ internal static class Program
         Check(GoldPixels(Star(original[1])) == 0, "Unpinned star must be an outline, not yellow.");
         Star(original[1]).PerformClick();
         Check(Host(Cards(panel)[0]) == "192.0.2.2", "Star click must immediately pin device to the top.");
-        Check(Pinned(original[1]) && GoldPixels(Star(original[1])) > 50, "Pinned star must be visibly yellow.");
+        var pinnedStar = Star(original[1]);
+        Check(Pinned(original[1]) && GoldPixels(pinnedStar) > pinnedStar.Width * pinnedStar.Height / 24,
+            "Pinned star must be visibly yellow at its current size.");
         Check(Star(original[1]).AccessibleName == "取消置顶", "Pinned state must be accessible.");
         Check(connects == 0, "Star click must not connect.");
         Check(Cards(panel).All(original.Contains), "Pinning must move existing controls instead of recreating previews.");

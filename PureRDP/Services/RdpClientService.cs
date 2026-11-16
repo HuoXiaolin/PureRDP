@@ -716,6 +716,11 @@ internal sealed class RdpClientService : IDisposable
         if (_connectionSettings.Username != null)
             _rdpClient.UserName = _connectionSettings.Username;
 
+        if (_connectionSettings.IsTemporaryConnection)
+        {
+            _rdpClient.AdvancedSettings9.PublicMode = true;
+            ((IMsRdpClientNonScriptable4)_rdpClient).AllowCredentialSaving = false;
+        }
         ApplyConnectionPassword();
 
         if (_connectionSettings.EnableCredSsp != null)
@@ -782,7 +787,9 @@ internal sealed class RdpClientService : IDisposable
         if (_connectionSettings.EnableCompression != null)
             _rdpClient.AdvancedSettings9.Compress = _connectionSettings.EnableCompression.Value ? 1 : 0;
 
-        if (_connectionSettings.EnableBitmapPersistence != null)
+        if (_connectionSettings.IsTemporaryConnection)
+            _rdpClient.AdvancedSettings9.BitmapPersistence = 0;
+        else if (_connectionSettings.EnableBitmapPersistence != null)
             _rdpClient.AdvancedSettings9.BitmapPersistence = _connectionSettings.EnableBitmapPersistence.Value ? 1 : 0;
         #endregion Display options
 

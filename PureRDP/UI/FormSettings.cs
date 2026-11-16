@@ -35,6 +35,9 @@ public partial class FormSettings : Form
     private int _recentConnectionsGeneration;
     private bool _nativeUsernamePending;
     private readonly Dictionary<TextBox, SettingsTextField> _textFields = new();
+    private readonly ModernButton? _lanDiscoveryButton;
+    private bool _savingDiscoveredDevice;
+    private bool _openingTemporaryConnection;
 
     internal ApplicationSettings UpdatedSettings { get; private set; }
     internal bool ConnectRequested { get; private set; }
@@ -44,6 +47,9 @@ public partial class FormSettings : Form
         : this(settings, icon, currentRdpSize, false) { }
 
     internal FormSettings(ApplicationSettings settings, Icon? icon, Size currentRdpSize, bool commonSettings)
+        : this(settings, icon, currentRdpSize, commonSettings, allowLanDiscovery: false) { }
+
+    internal FormSettings(ApplicationSettings settings, Icon? icon, Size currentRdpSize, bool commonSettings, bool allowLanDiscovery)
     {
         _commonSettings = commonSettings;
         ArgumentNullException.ThrowIfNull(settings);
@@ -61,6 +67,11 @@ public partial class FormSettings : Form
             RemoveLegacyConnectionBarSettings();
             ApplyDesignSystem();
             AddDeviceNameField();
+            if (allowLanDiscovery && !commonSettings)
+            {
+                _lanDiscoveryButton = new ModernButton { Text = "扫描局域网…", Font = Font };
+                _lanDiscoveryButton.Click += LanDiscovery_Click;
+            }
             AddTileScaleField();
             AddControlBarFields();
             InitializeEnumComboBoxes();
@@ -289,9 +300,28 @@ public partial class FormSettings : Form
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
-        shell.Controls.Add(new Label { Text = "设备连接设置", Dock = DockStyle.Fill,
+        var heading = new Label { Text = _commonSettings ? ".rdp 通用连接设置" : "设备连接设置", Dock = DockStyle.Fill,
             Padding = new Padding(24, 16, 0, 0), Font = new Font(UiDesignTokens.FontFamily, 16F, FontStyle.Bold),
-            BackColor = UiDesignTokens.SurfaceSubtle, ForeColor = UiDesignTokens.TextPrimary }, 0, 0);
+            BackColor = UiDesignTokens.SurfaceSubtle, ForeColor = UiDesignTokens.TextPrimary };
+        if (_lanDiscoveryButton is { } scanButton)
+        {
+            var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1,
+                BackColor = UiDesignTokens.SurfaceSubtle, Margin = heading.Margin };
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            heading.Margin = Padding.Empty;
+            scanButton.Size = new Size(132, UiDesignTokens.ControlHeight);
+            scanButton.Margin = new Padding(0, 0, 24, 0);
+            scanButton.Anchor = AnchorStyles.Right;
+            header.Controls.Add(heading, 0, 0);
+            header.Controls.Add(scanButton, 1, 0);
+            shell.Controls.Add(header, 0, 0);
+        }
+        else
+        {
+            shell.Controls.Add(heading, 0, 0);
+        }
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(16, 8, 16, 12) };
         var columns = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2,
             RowCount = 1, Margin = Padding.Empty };
@@ -344,7 +374,6 @@ public partial class FormSettings : Form
         shell.BringToFront();
         if (_commonSettings)
         {
-            ((Label)shell.GetControlFromPosition(0, 0)!).Text = ".rdp 通用连接设置";
             btnConnect.Visible = btnSaveAs.Visible = false;
             Text = ".rdp 通用连接设置 · PureRDP";
         }
@@ -970,6 +999,9 @@ public partial class FormSettings : Form
 
     private void CompleteSettings(bool connect)
     {
+        if (_openingTemporaryConnection)
+            return;
+
         if (_commonSettings)
         {
             var profile = RdpProxySettingsService.Sanitize(GetConnectionSettingsFromUi());
@@ -990,11 +1022,18 @@ public partial class FormSettings : Form
 
     private bool SaveSettingsToConnectionLibrary()
     {
-        var previousHostname = UpdatedSettings.Connection.Hostname;
+        var previousHostname = _savingDiscoveredDevice ? null : UpdatedSettings.Connection.Hostname;
         var connectionSettings = GetConnectionSettingsFromUi();
         if (!connectionSettings.IsValid())
         {
             ShowValidationErrors(connectionSettings);
+            return false;
+        }
+
+        if (_savingDiscoveredDevice && IsDiscoveredEndpointSaved(connectionSettings.Hostname))
+        {
+            MessageBox.Show(this, "此地址已在设备库中。可以在控制台编辑已有设备，或选择其他地址。",
+                "设备已保存", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return false;
         }
 
@@ -1036,11 +1075,90 @@ public partial class FormSettings : Form
             !string.Equals(previousHostname, connectionSettings.Hostname, StringComparison.OrdinalIgnoreCase))
             RecentConnectionsService.Remove(previousHostname);
 
+        connectionSettings.IsTemporaryConnection = false;
         UpdatedSettings.Connection = connectionSettings;
         UpdatedSettings.IsExternalConnection = false;
         UpdatedSettings.RdpFilePath = null;
         Text = "设置 - PureRDP";
         return true;
+    }
+
+    private static bool IsDiscoveredEndpointSaved(string? hostname)
+    {
+        var key = LanDiscoveryService.NormalizeEndpoint(hostname);
+        return RecentConnectionsService.LoadAll().Any(connection =>
+            string.Equals(LanDiscoveryService.NormalizeEndpoint(connection.Hostname), key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async void LanDiscovery_Click(object? sender, EventArgs e)
+    {
+        if (_openingTemporaryConnection) return;
+        var savedAddresses = cmbHostname.Items.OfType<ComboBoxItem<ConnectionSettings>>().Select(item => item.Value.Hostname);
+        using var dialog = new LanDiscoveryDialog(Icon, savedAddresses);
+        if (dialog.ShowDialog(this) == DialogResult.OK && dialog.SelectedAddress is { } endpoint)
+            await ApplyLanSelectionAsync(endpoint, dialog.ConnectTemporarily);
+    }
+
+    private async Task ApplyLanSelectionAsync(string endpoint, bool temporary)
+    {
+        var sameEndpoint = string.Equals(LanDiscoveryService.NormalizeEndpoint(cmbHostname.Text), endpoint,
+            StringComparison.OrdinalIgnoreCase);
+        cmbHostname.SelectedIndex = -1;
+        cmbHostname.Text = endpoint;
+        if (!sameEndpoint)
+        {
+            cmbUsername.Text = string.Empty;
+            ClearPreviousEndpointCredentials();
+        }
+
+        _nativeUsernamePending = string.IsNullOrWhiteSpace(cmbUsername.Text);
+        if (!temporary)
+        {
+            _savingDiscoveredDevice = true;
+            _deviceName.Focus();
+            _ = QueueCredentialHintRefreshAsync();
+            return;
+        }
+
+        _openingTemporaryConnection = true;
+        try
+        {
+            await QueueCredentialHintRefreshAsync();
+            if (IsDisposed || !Visible || DialogResult != DialogResult.None || cmbHostname.Text != endpoint)
+                return;
+
+            if (string.IsNullOrWhiteSpace(cmbUsername.Text))
+                cmbUsername.Text = "Administrator";
+
+            var connection = GetConnectionSettingsFromUi();
+            if (!connection.IsValid())
+            {
+                ShowValidationErrors(connection);
+                return;
+            }
+
+            var username = connection.Username.CombineUsernameAndDomain(connection.Domain);
+            if (connection.Password == null && (_savedCredentialUsername == null ||
+                !string.Equals(username, _savedCredentialUsername, StringComparison.OrdinalIgnoreCase)))
+                connection.PromptForCredentials = true;
+            connection.IsTemporaryConnection = true;
+            UpdatedSettings.Connection = connection;
+            ConnectRequested = true;
+            DialogResult = DialogResult.OK;
+        }
+        finally
+        {
+            _openingTemporaryConnection = false;
+        }
+    }
+
+    private void ClearPreviousEndpointCredentials()
+    {
+        tbPassword.Clear();
+        UpdatedSettings.Connection.Password = null;
+        UpdatedSettings.Connection.EncryptedPassword51 = null;
+        UpdatedSettings.Connection.NativeFallback?.CancelIfPending();
+        UpdatedSettings.Connection.NativeFallback = null;
     }
 
     private void cmbHostname_TextChanged(object? sender, EventArgs e)
@@ -1219,11 +1337,7 @@ public partial class FormSettings : Form
         {
             // Never reuse a previous device's explicit password for a different
             // history address. Windows keeps the selected target's saved secret.
-            tbPassword.Clear();
-            UpdatedSettings.Connection.Password = null;
-            UpdatedSettings.Connection.EncryptedPassword51 = null;
-            UpdatedSettings.Connection.NativeFallback?.CancelIfPending();
-            UpdatedSettings.Connection.NativeFallback = null;
+            ClearPreviousEndpointCredentials();
             _nativeUsernamePending = true;
             _ = RefreshCredentialHintAsync(true);
         }

@@ -393,6 +393,8 @@ internal static class Program
         // credentials, remote login or user-provided ticket is involved.
         using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
         listener.Start();
+        var endpoint = $"127.0.0.1:{((System.Net.IPEndPoint)listener.LocalEndpoint).Port}";
+        var historyBefore = LoopbackRdpHistory(endpoint);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var captured = System.Threading.Tasks.Task.Run(async () =>
         {
@@ -412,16 +414,19 @@ internal static class Program
         window.Show();
         var service = Field(window, "_rdpService");
         var profile = Field(window, "_appSettings").GetType().GetProperty("Connection")!.GetValue(Field(window, "_appSettings"))!;
+        profile.GetType().GetProperty("Hostname")!.SetValue(profile, endpoint);
+        profile.GetType().GetProperty("IsTemporaryConnection", Members)!.SetValue(profile, true);
+        profile.GetType().GetProperty("EnableBitmapPersistence")!.SetValue(profile, true);
         profile.GetType().GetProperty("LoadBalanceInfo")!.SetValue(profile, "Cookie: msts=purerdp-wire-fixture");
         service.GetType().GetField("_connectionSettings", Members)!.SetValue(service, profile);
         Call(service, "CreateRdpControlAndClient");
         try
         {
             var native = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
-            native.Server = "127.0.0.1";
-            native.AdvancedSettings9.RDPPort = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-            native.AdvancedSettings9.EnableAutoReconnect = false;
-            Call(service, "ApplyRoutingSettings");
+            Call(service, "ApplySettingsToRdpClient");
+            Check(native.AdvancedSettings9.PublicMode && native.AdvancedSettings9.BitmapPersistence == 0 &&
+                !((MSTSCLib.IMsRdpClientNonScriptable4)native).AllowCredentialSaving,
+                "Temporary native sessions must disable persistent credential and bitmap caching before Connect.");
             native.Connect();
             while (!captured.IsCompleted && !timeout.IsCancellationRequested) { Application.DoEvents(); Thread.Sleep(10); }
             var bytes = captured.GetAwaiter().GetResult();
@@ -431,6 +436,31 @@ internal static class Program
             if (native.Connected != 0) native.Disconnect();
         }
         finally { Call(service, "RemoveRdpControlAndClient"); }
+        Pump();
+        Check(historyBefore.SequenceEqual(LoopbackRdpHistory(endpoint)),
+            "A temporary transport-only connection must not add or change its Windows client history or username hint.");
+        Console.WriteLine("PASS: temporary RDP public mode and unchanged Windows client history after loopback transport.");
+    }
+
+    private static string[] LoopbackRdpHistory(string endpoint)
+    {
+        const string root = @"Software\Microsoft\Terminal Server Client";
+        const string host = "127.0.0.1";
+        using var history = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(root + @"\Default", writable: false);
+        using var servers = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(root + @"\Servers", writable: false);
+        var snapshot = new List<string>();
+        if (history != null)
+        {
+            foreach (var name in history.GetValueNames().Where(name => name.StartsWith("MRU", StringComparison.OrdinalIgnoreCase)).Order())
+                if (history.GetValue(name) is string value && (value == host || value == endpoint))
+                    snapshot.Add($"{name}={value}");
+        }
+        foreach (var target in new[] { host, endpoint })
+        {
+            using var server = servers?.OpenSubKey(target, writable: false);
+            snapshot.Add($"{server != null}:{server?.GetValue("UsernameHint")}");
+        }
+        return snapshot.ToArray();
     }
 
     private static void TestConnectionViewportStability()
@@ -809,6 +839,13 @@ internal static class Program
         External(first, false);
         Check(ReferenceEquals(selector.Invoke(manager, null), first),
             "Saved-device connections must retain their existing window reuse behavior.");
+        var temporary = firstProfile.GetType().GetProperty("IsTemporaryConnection", Members)!;
+        temporary.SetValue(Profile(manager), true);
+        Check(selector.Invoke(manager, null) == null, "A temporary request must not reuse a persistent session.");
+        temporary.SetValue(firstProfile, true);
+        Check(ReferenceEquals(selector.Invoke(manager, null), first), "The same temporary session can be activated again.");
+        temporary.SetValue(firstProfile, false);
+        temporary.SetValue(Profile(manager), false);
         External(first, true); External(manager, true);
         first.Show(); second.Show(); Pump();
         secondProfile.GetType().GetProperty("DisplayName")!.SetValue(secondProfile, "Session B");

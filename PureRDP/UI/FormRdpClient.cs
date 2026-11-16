@@ -314,9 +314,12 @@ public partial class FormRdpClient : Form
         // A broker endpoint/account is not the remote device identity. Every
         // external handoff has its own ticket and must own its own window.
         if (_appSettings.IsExternalConnection) return null;
+        var endpoint = LanDiscoveryService.NormalizeEndpoint(_appSettings.Connection.Hostname);
         return _sessionWindows.FirstOrDefault(window => !window.IsDisposed && !window._sessionClosing &&
             !window._previewOnly && !window._appSettings.IsExternalConnection &&
-            string.Equals(window._appSettings.Connection.Hostname, _appSettings.Connection.Hostname, StringComparison.OrdinalIgnoreCase) &&
+            window._appSettings.IsTemporaryConnection == _appSettings.IsTemporaryConnection &&
+            string.Equals(LanDiscoveryService.NormalizeEndpoint(window._appSettings.Connection.Hostname), endpoint,
+                StringComparison.OrdinalIgnoreCase) &&
             string.Equals(window._appSettings.Connection.Username, _appSettings.Connection.Username, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(window._appSettings.Connection.Domain, _appSettings.Connection.Domain, StringComparison.OrdinalIgnoreCase));
     }
@@ -344,7 +347,7 @@ public partial class FormRdpClient : Form
         if (!_appSettings.IsExternalConnection)
         {
             var previewKey = PreviewKey(_appSettings.Connection);
-            if (_previewSessions.TryGetValue(previewKey, out var preview) && !preview.IsDisposed &&
+            if (_previewSessions.TryGetValue(previewKey, out var preview) && !_appSettings.IsTemporaryConnection && !preview.IsDisposed &&
                 preview.PrepareForInteractive(_appSettings.Connection) &&
                 sessionWindow.AdoptPreviewSession(preview))
             {
@@ -2074,9 +2077,21 @@ public partial class FormRdpClient : Form
         var previousSettings = _appSettings;
         _appSettings = new ApplicationSettings { NoCloseOnDisconnect = true };
 
-        if (!ShowSettings())
+        if (!ShowSettings(allowLanDiscovery: true))
         {
             _appSettings = previousSettings;
+            return;
+        }
+
+        if (_appSettings.IsTemporaryConnection)
+        {
+            var temporarySettings = _appSettings;
+            try { Connect(); }
+            finally
+            {
+                if (ReferenceEquals(_appSettings, temporarySettings))
+                    _appSettings = previousSettings;
+            }
             return;
         }
 
@@ -2436,20 +2451,23 @@ public partial class FormRdpClient : Form
         }
     }
 
-    private bool ShowSettings()
+    private bool ShowSettings(bool allowLanDiscovery = false)
     {
         _settingsConnectRequested = false;
         var previousHostname = _appSettings.Connection.Hostname;
         var currentRdpSize = _sessionWindow is { IsDisposed: false }
             ? _sessionWindow.ClientSize
             : panelRdp.Size;
-        using var settingsDialog = new FormSettings(_appSettings, Icon, currentRdpSize);
+        using var settingsDialog = new FormSettings(_appSettings, Icon, currentRdpSize, commonSettings: false, allowLanDiscovery);
         var dialogConfirmed = settingsDialog.ShowDialog(this) == DialogResult.OK;
         if (!dialogConfirmed)
             return false;
 
         _appSettings = settingsDialog.UpdatedSettings;
         _settingsConnectRequested = settingsDialog.ConnectRequested;
+        if (_appSettings.IsTemporaryConnection)
+            return true;
+
         _formSystemMenuService.UpdateZoomCheckmarks(_appSettings.Connection.ScaleFactor);
         _formSizeEnforcementService.IsActive = _appSettings.Connection.AutoResize == true ||
                                                _appSettings.Connection.AutoMaximizeWindow == true;
@@ -2769,6 +2787,7 @@ public partial class FormRdpClient : Form
 
     private void SaveWindowSettings()
     {
+        if (_appSettings.IsTemporaryConnection) return;
         var hostname = _isSessionWindow ? _appSettings.Connection.Hostname : null;
         CaptureWindowSettings().Save(hostname);
     }
@@ -3136,7 +3155,7 @@ public partial class FormRdpClient : Form
         {
             var management = _managementWindow ?? this;
             var snapshots = management._sessionWindows.Prepend(management)
-                .Where(window => !window.IsDisposed && !window._previewOnly)
+                .Where(window => !window.IsDisposed && !window._previewOnly && !window._appSettings.IsTemporaryConnection)
                 .Select(window => (Settings: window.CaptureWindowSettings(),
                     Hostname: window._isSessionWindow ? window._appSettings.Connection.Hostname : null))
                 .ToArray();
@@ -3332,6 +3351,8 @@ public partial class FormRdpClient : Form
         _reconnectFullScreen = _rdpService.FullScreen;
         _reconnectFullScreenMultiMonitor = _fullScreenMultiMonitor;
         StopAutomaticReconnect();
+        if (_appSettings.IsTemporaryConnection)
+            return;
 
         // File/proxy preferences and broker tickets belong to this session,
         // not to a saved device with the same endpoint.

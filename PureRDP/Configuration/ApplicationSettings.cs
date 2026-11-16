@@ -36,7 +36,10 @@ internal class ApplicationSettings
     // saved device merely because it shares the same endpoint.
     public bool IsExternalConnection { get; set; }
 
-    internal bool CanAutoSaveDeviceProfile => !IsExternalConnection && string.IsNullOrWhiteSpace(Connection.LoadBalanceInfo) &&
+    internal bool IsTemporaryConnection => Connection.IsTemporaryConnection;
+
+    internal bool CanAutoSaveDeviceProfile => !IsExternalConnection && !IsTemporaryConnection &&
+        string.IsNullOrWhiteSpace(Connection.LoadBalanceInfo) &&
         string.IsNullOrWhiteSpace(Connection.EncryptedPassword51) && string.IsNullOrWhiteSpace(Connection.AlternateShell) &&
         string.IsNullOrWhiteSpace(Connection.ShellWorkingDirectory);
 

@@ -230,15 +230,18 @@ internal sealed class DeviceAvailabilityScanner : IDisposable
         }
     }
 
-    private static async Task<bool> TryConnectAsync(
+    internal static async Task<bool> TryConnectAsync(
         IPAddress address,
         int port,
         CancellationToken timeoutToken,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IPAddress? localAddress = null)
     {
         try
         {
             using var client = new TcpClient(address.AddressFamily);
+            if (localAddress != null)
+                client.Client.Bind(new IPEndPoint(localAddress, 0));
             await client.ConnectAsync(address, port, timeoutToken).ConfigureAwait(false);
             return client.Connected;
         }
@@ -256,7 +259,7 @@ internal sealed class DeviceAvailabilityScanner : IDisposable
         }
     }
 
-    private static bool TryParseHostAndPort(string? endpoint, out string host, out int port)
+    internal static bool TryParseHostAndPort(string? endpoint, out string host, out int port)
     {
         host = string.Empty;
         port = 3389;

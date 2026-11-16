@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Security;
 
 namespace PureRDP.Services;
@@ -74,6 +76,8 @@ internal static class WindowsRdpHistoryService
             if (end > 0) host = value[..(end + 1)];
         }
         else if (value.Count(c => c == ':') == 1) host = value[..value.IndexOf(':')];
+        if (value == host && IPAddress.TryParse(value, out var address) && address.AddressFamily == AddressFamily.InterNetwork)
+            return [value, $"{value}:{LanDiscoveryService.DefaultPort.ToString(CultureInfo.InvariantCulture)}"];
         return new[] { value, host, host.Trim('[', ']') }.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 }

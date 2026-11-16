@@ -93,6 +93,9 @@ internal class ConnectionSettings
     [RdpFile("prompt for credentials")]
     public bool? PromptForCredentials { get; set; }
 
+    // Runtime only. This follows the session through reconnects and is never exported.
+    internal bool IsTemporaryConnection { get; set; }
+
     /// <summary>
     /// Gets or sets the server authentication level for certificate validation
     /// </summary>

@@ -110,6 +110,8 @@ internal static class Program
         Check(addresses[4] == "last.example", "MRU indexes sort numerically");
         Check(((string[])Call("ParseAddresses", new Dictionary<string, object?>())).Length == 0, "empty history");
         Check(((string[])Call("UsernameHintTargets", "host.example:9850")).SequenceEqual(new[] { "host.example:9850", "host.example" }), "username hint endpoint before host fallback");
+        Check(((string[])Call("UsernameHintTargets", "192.0.2.10")).SequenceEqual(new[] { "192.0.2.10", "192.0.2.10:3389" }),
+            "discovered default port also matches an explicit 3389 Windows username hint");
         Check(((string[])Call("UsernameHintTargets", "2001:db8::2")).SequenceEqual(new[] { "2001:db8::2" }), "plain IPv6 username target not truncated");
         Check(((string[])Call("UsernameHintTargets", "[2001:db8::2]:3389")).Last() == "2001:db8::2", "IPv6 username hint variants");
         var additional = (string[])Call("AdditionalAddresses", new string?[] { " host.example:9850 ", null }, addresses);

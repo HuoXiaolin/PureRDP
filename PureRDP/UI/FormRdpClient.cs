@@ -934,10 +934,6 @@ public partial class FormRdpClient : Form
 
         _glassChromeStrip.SetGlassMode(true);
         _glassChromeStrip.SetAutoHide(_globalControlBarAutoHide);
-        if (ShouldHideControlBar())
-            _glassChromeStrip.Hide();
-        else if (!_glassChromeStrip.Visible)
-            _glassChromeStrip.Show(this);
         _glassChromeStrip.UpdateMaximizeGlyph(WindowState == FormWindowState.Maximized || _rdpService?.FullScreen == true);
         PositionWindowChrome();
     }
@@ -963,30 +959,37 @@ public partial class FormRdpClient : Form
     private void PositionWindowChrome()
     {
         UpdateConnectionCornerRegion();
-        if (_glassChromeStrip == null || _glassChromeStrip.IsDisposed || IsDisposed ||
-            Disposing || _sessionClosing || !_remoteChromeActive || !Visible ||
-            WindowState == FormWindowState.Minimized)
+        if (_glassChromeStrip is not { IsDisposed: false } strip || _previewOnly ||
+            IsDisposed || Disposing || _sessionClosing || !_remoteChromeActive)
             return;
 
         var position = _managementWindow?._globalControlBarPosition ?? _globalControlBarPosition;
-        _glassChromeStrip.SetPosition(position);
-        var stripX = position switch
+        var hideControlBar = position == ControlBarPosition.Hidden || ShouldHideControlBar();
+        if (hideControlBar)
+            strip.Hide();
+        if (!Visible || WindowState == FormWindowState.Minimized)
+            return;
+
+        if (!hideControlBar)
         {
-            ControlBarPosition.Top or ControlBarPosition.Bottom
-                => Math.Max(0, (ClientSize.Width - _glassChromeStrip.Width) / 2),
-            ControlBarPosition.Left => 0,
-            _ => Math.Max(0, ClientSize.Width - _glassChromeStrip.Width),
-        };
-        var stripY = position switch
-        {
-            ControlBarPosition.Top => 0,
-            ControlBarPosition.Bottom => Math.Max(0, ClientSize.Height - _glassChromeStrip.Height),
-            ControlBarPosition.Left or ControlBarPosition.Right
-                => Math.Max(0, (ClientSize.Height - _glassChromeStrip.Height) / 2),
-            _ => Math.Max(0, (ClientSize.Height - _glassChromeStrip.Height) / 2),
-        };
-        _glassChromeStrip.Location = PointToScreen(new Point(stripX, stripY));
-        if (Form.ActiveForm == this) _glassChromeStrip.BringToFront();
+            strip.SetPosition(position);
+            var stripX = position switch
+            {
+                ControlBarPosition.Top or ControlBarPosition.Bottom => Math.Max(0, (ClientSize.Width - strip.Width) / 2),
+                ControlBarPosition.Left => 0,
+                _ => Math.Max(0, ClientSize.Width - strip.Width),
+            };
+            var stripY = position switch
+            {
+                ControlBarPosition.Top => 0,
+                ControlBarPosition.Bottom => Math.Max(0, ClientSize.Height - strip.Height),
+                _ => Math.Max(0, (ClientSize.Height - strip.Height) / 2),
+            };
+            strip.Location = PointToScreen(new Point(stripX, stripY));
+            if (!strip.Visible) strip.Show(this);
+            if (Form.ActiveForm == this) strip.BringToFront();
+        }
+
         var corners = new[] { new Point(0, ClientSize.Height - ResizeGripSize),
             new Point(ClientSize.Width - ResizeGripSize, ClientSize.Height - ResizeGripSize) };
         for (var i = 0; i < _cornerGrips.Length; i++)
@@ -1478,7 +1481,10 @@ public partial class FormRdpClient : Form
         session._restoringControlBarState = true;
         session._suppressNextActivationVisualRefresh = true;
         session._suppressRemoteResizeAfterRestore = true;
-        session.SetRestoreRedraw(false);
+        // A fullscreen restore can reuse the existing viewport. Keep the
+        // canvas visible when Windows presents the restored host: disabling
+        // native redraw hides the child HWNDs until the queued resume.
+        session.SetRestoreRedraw(snapshot.FullScreen);
 
         try
         {

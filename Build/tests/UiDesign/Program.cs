@@ -172,11 +172,25 @@ internal static class Program
         Check(address.DropDownStyle == ComboBoxStyle.DropDown, "Address input must stay editable.");
         address.Text = "192.0.2.18:3389";
         Check(address.Text == "192.0.2.18:3389", "Styling must not change editable input text.");
-        var position = (ComboBox)Field(pages.Cast<Control>().First(p => p.GetType().Name == "WindowSettingsPage"), "_controlBarPosition");
-        Check(position.DropDownStyle == ComboBoxStyle.DropDownList && position.Items.Count == 4,
-            "Control-bar position options and noneditable behavior must remain unchanged.");
+        var position = (ComboBox)Field(windowPage, "_controlBarPosition");
+        Check(position.DropDownStyle == ComboBoxStyle.DropDownList && position.Items.Count == 5,
+            "The position selector must offer four edges and a hidden option.");
         position.SelectedIndex = 2;
         Check(position.SelectedItem!.ToString()!.Contains("左侧"), "Native dropdown selection must retain the original bound item.");
+        var autoHide = (CheckBox)Field(windowPage, "_controlBarAutoHide");
+        autoHide.Checked = true;
+        position.SelectedIndex = 4;
+        Check(position.SelectedItem!.ToString() == "隐藏" && !autoHide.Enabled,
+            "Selecting Hidden must disable the separate collapse option.");
+        var hiddenPreferences = New("Configuration.GlobalSettings");
+        windowPage.GetType().GetMethod("ApplyTo", Members)!.Invoke(windowPage, new[] { hiddenPreferences });
+        var clonedPreferences = hiddenPreferences.GetType().GetMethod("Clone")!.Invoke(hiddenPreferences, null)!;
+        position.SelectedIndex = 0;
+        Check(autoHide.Enabled && autoHide.Checked, "Restoring an edge must preserve the previous collapse preference.");
+        windowPage.GetType().GetMethod("LoadFrom", Members)!.Invoke(windowPage, new[] { clonedPreferences });
+        Check(position.SelectedItem!.ToString() == "隐藏" && !autoHide.Enabled, "Hidden must survive settings serialization and reload.");
+        global.GetType().GetMethod("SelectPage", Members)!.Invoke(global, new object[] { windowPage });
+        Render(global, "ControlBarHiddenSettings");
         device.ClientSize = new Size(780, 570);
         Render(device, "DeviceCompact");
         var panels = Children(device).OfType<Panel>().Where(p => p.AutoScroll).ToArray();

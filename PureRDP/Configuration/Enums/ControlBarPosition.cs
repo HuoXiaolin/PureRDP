@@ -1,8 +1,7 @@
 namespace PureRDP.Configuration.Enums;
 
 /// <summary>
-/// Specifies which edge of the remote session window hosts PureRDP's custom
-/// control bar. The bar is centered along the selected edge.
+/// Specifies the edge for PureRDP's control bar, or hides it.
 /// </summary>
 public enum ControlBarPosition
 {
@@ -10,4 +9,5 @@ public enum ControlBarPosition
     Bottom = 1,
     Left = 2,
     Right = 3,
+    Hidden = 4,
 }

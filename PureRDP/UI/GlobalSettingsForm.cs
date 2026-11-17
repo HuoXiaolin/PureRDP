@@ -247,17 +247,24 @@ internal sealed class WindowSettingsPage : SettingsPage
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Bottom, "窗口底部（居中）"));
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Left, "窗口左侧（居中）"));
         _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Right, "窗口右侧（居中）"));
+        _controlBarPosition.Items.Add(new PositionItem(ControlBarPosition.Hidden, "隐藏"));
         SetComboBoxValue(_controlBarPosition, preferences.ControlBarDock);
         _controlBarAutoHide = new CheckBox { Text = "鼠标移开后自动收起控制栏", AutoSize = true, Checked = preferences.ControlBarAutoHide };
         _roundedCorners = new CheckBox { Text = "连接窗口开启 16 像素圆角", Name = "RoundedConnectionCorners", AutoSize = true, Checked = preferences.RoundedConnectionCorners };
         var preview = new ConnectionChromePreview(() => GetComboBoxValue(_controlBarPosition), () => _roundedCorners.Checked);
-        _controlBarPosition.SelectedIndexChanged += (_, _) => preview.Invalidate();
+        void UpdateControlBarOptions()
+        {
+            _controlBarAutoHide.Enabled = GetComboBoxValue(_controlBarPosition) != ControlBarPosition.Hidden;
+            preview.Invalidate();
+        }
+        _controlBarPosition.SelectedIndexChanged += (_, _) => UpdateControlBarOptions();
+        UpdateControlBarOptions();
         _roundedCorners.CheckedChanged += (_, _) => preview.Invalidate();
         SettingsPageDesign.Add(rows, SettingsPageDesign.Section("控制栏",
             SettingsPageDesign.Field("默认位置", _controlBarPosition), _controlBarAutoHide, preview));
         SettingsPageDesign.Add(rows, SettingsPageDesign.Section("连接窗口与排列",
             _roundedCorners, SettingsPageDesign.Actions(_independent, _tile),
-            SettingsPageDesign.Note("仅拖动控制栏九点区域可移动窗口；真全屏不能拖动。左下、右下角仍可调整普通窗口尺寸。\n设备中的“隐藏控制栏”可独立覆盖显示设置。")));
+            SettingsPageDesign.Note("仅拖动控制栏九点区域可移动窗口；真全屏不能拖动。左下、右下角仍可调整普通窗口尺寸。\n设备也可按窗口模式单独隐藏控制栏。")));
         Controls.Add(rows);
     }
 

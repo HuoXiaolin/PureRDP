@@ -74,6 +74,8 @@ internal static class Program
         TestDynamicViewportTransitions();
         TestPreLoginViewport();
         TestConnectionViewportStability();
+        TestHiddenControlBar();
+        TestFullscreenRestoreCanvas();
         TestRoutingPacket();
         using var manager = Window(null);
         _ = manager.Handle;
@@ -385,6 +387,61 @@ internal static class Program
         Check(IsWindowVisible(first.Handle), "Restore redraw suspension removed visibility from the top-level window.");
         Call(first, "SetRestoreRedraw", true);
         Console.WriteLine($"PASS: {_checks} minimize/restore checks; real host HWNDs, no RDP login.");
+    }
+
+    private static void TestFullscreenRestoreCanvas()
+    {
+        using var manager = Window(null);
+        _ = manager.Handle;
+        using var session = Window(manager);
+        ((IList)Field(manager, "_sessionWindows")).Add(session);
+        session.Show();
+        Call(session, "SetRemoteConnectionChrome", true);
+        var service = Field(session, "_rdpService");
+        Call(service, "CreateRdpControlAndClient");
+        try
+        {
+            var canvas = (Control)Field(session, "panelRdp");
+            var activeX = (Control)Field(service, "_rdpControl");
+            Call(service, "SetFullScreen", true, true);
+            Pump();
+            var fullScreenBounds = session.Bounds;
+            Check(IsWindowVisible(canvas.Handle) && IsWindowVisible(activeX.Handle),
+                "The fullscreen fixture must have a visible native RDP surface.");
+
+            foreach (var groupMinimize in new[] { true, false })
+            {
+                if (groupMinimize)
+                    Call(manager, "ToggleAllSessionMinimize", false);
+                else
+                    session.WindowState = FormWindowState.Minimized;
+                Pump();
+                Check(IsIconic(session.Handle), "The fullscreen connection must be minimized before restoring it.");
+
+                Call(manager, "ToggleAllSessionMinimize", false);
+                // Check the first visible state before the queued redraw-resume callbacks.
+                Check(!IsIconic(session.Handle) && session.Bounds == fullScreenBounds,
+                    "The shortcut must restore directly to the fullscreen bounds.");
+                Check(IsWindowVisible(canvas.Handle) && IsWindowVisible(activeX.Handle),
+                    "The native RDP surface must already be visible when the fullscreen host is restored.");
+                Pump();
+            }
+
+            Call(service, "SetFullScreen", false, true);
+            var windowedBounds = session.Bounds;
+            session.WindowState = FormWindowState.Minimized;
+            Pump();
+            Call(service, "SetFullScreen", true, true);
+            Check(!IsIconic(session.Handle) && session.Bounds == fullScreenBounds &&
+                IsWindowVisible(canvas.Handle) && IsWindowVisible(activeX.Handle),
+                "Entering fullscreen from a minimized window must finish with the native RDP surface visible.");
+            Call(service, "SetFullScreen", false, true);
+            Check(session.Bounds == windowedBounds, "Exiting fullscreen must restore the original windowed bounds.");
+        }
+        finally
+        {
+            Call(service, "RemoveRdpControlAndClient");
+        }
     }
 
     private static void TestRoutingPacket()
@@ -1012,6 +1069,48 @@ internal static class Program
         var settings = options.GetType().GetProperty("Window")!.GetValue(options)!;
         foreach (var name in new[] { "ManualWindowX", "ManualWindowY", "ManualWindowWidth", "ManualWindowHeight" })
             settings.GetType().GetProperty(name)!.SetValue(settings, null);
+    }
+
+    private static void TestHiddenControlBar()
+    {
+        using var manager = Window(null);
+        using var session = Window(manager);
+        var preference = typeof(FormRdpClient).GetField("_globalControlBarPosition", Members)!;
+        void ApplyPosition(string value)
+        {
+            preference.SetValue(manager, Enum.Parse(preference.FieldType, value));
+            Call(session, "PositionWindowChrome");
+        }
+
+        ApplyPosition("Hidden");
+        session.Show();
+        Call(session, "SetRemoteConnectionChrome", true);
+        var strip = (Form)Field(session, "_glassChromeStrip");
+        var grips = (IEnumerable)Field(session, "_cornerGrips");
+        Check(!strip.Visible && grips.Cast<Form>().All(grip => grip.Visible),
+            "A session started hidden must show no bar while keeping ordinary resize grips.");
+
+        ApplyPosition("Right");
+        Check(strip.Visible && IsWindowVisible(strip.Handle) &&
+            strip.Right == session.PointToScreen(new Point(session.ClientSize.Width, 0)).X,
+            "Changing Hidden to Right must show the existing session's bar at the right edge.");
+        var lastHandlePoint = strip.PointToScreen(new Point(strip.Width / 2, strip.Height / 2));
+        ApplyPosition("Hidden");
+        Check(!IsWindowVisible(strip.Handle) && !(bool)Call(session, "IsToolbarArea", lastHandlePoint),
+            "Applying Hidden must immediately remove the live rail and its hit area.");
+
+        var service = Field(session, "_rdpService");
+        Call(service, "SetFullScreen", true, true);
+        Check(!strip.Visible && grips.Cast<Form>().All(grip => !grip.Visible),
+            "True fullscreen must keep the hidden bar off and suppress window resize grips.");
+        var settings = Field(session, "_appSettings");
+        var profile = settings.GetType().GetProperty("Connection")!.GetValue(settings)!;
+        profile.GetType().GetProperty("ControlBarHiddenFullscreen")!.SetValue(profile, true);
+        ApplyPosition("Top");
+        Check(!strip.Visible, "A device's fullscreen hide preference must still apply with a global edge selected.");
+        Call(service, "SetFullScreen", false, true);
+        Check(strip.Visible && grips.Cast<Form>().All(grip => grip.Visible),
+            "Leaving fullscreen must restore the configured bar and resize grips in the normal window.");
     }
 
     private static void TestCollapsedRail()

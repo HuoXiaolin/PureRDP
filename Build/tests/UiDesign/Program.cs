@@ -37,6 +37,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         TestDeviceIsolation();
         Directory.CreateDirectory(Path.Combine("outputs", "ui-review"));
         foreach (var entry in new[] {

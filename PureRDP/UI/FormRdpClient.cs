@@ -37,6 +37,7 @@ public partial class FormRdpClient : Form
 
     // Cancellation token source for delayed connection message display
     private readonly CrystalLoaderControl _connectionLoader = new();
+    private readonly SessionFrameTransition? _frameTransition;
     private ConnectionLibraryPanel? _connectionLibraryPanel;
     private GlassWindowControlStrip? _glassChromeStrip;
     private GlassWindowControlStrip[] _cornerGrips = [];
@@ -63,10 +64,10 @@ public partial class FormRdpClient : Form
     private bool _remoteChromeActive;
     private bool _sessionClosing;
     private bool _sessionReplaced;
-    private bool _applyConnectionWindowSizeAfterConnect;
     private bool _remoteResizeQueued;
     private bool _suppressRemoteResizeAfterRestore;
-    private bool _restoreRedrawSuspended;
+    private Rectangle? _normalTransitionBounds;
+    private FormWindowState _nativeSizeState;
     private bool _restoringControlBarState;
     private bool _suppressNextActivationVisualRefresh;
     private int _manualResizeHitTest = Interop.HTCLIENT;
@@ -119,6 +120,11 @@ public partial class FormRdpClient : Form
         _previewOnly = previewOnly;
 
         InitializeComponent();
+        if (_isSessionWindow)
+        {
+            _frameTransition = new SessionFrameTransition();
+            Controls.Add(_frameTransition);
+        }
         panelConnect.Controls.Add(_connectionLoader);
         panelConnect.Resize += ConnectingSurface_Resize;
         panelConnect.BackColor = Color.FromArgb(247, 250, 253);
@@ -370,8 +376,9 @@ public partial class FormRdpClient : Form
         _sessionWindows.Add(sessionWindow);
         // Keep the session window independent from the management window so
         // hiding the console into the tray never hides the active connection.
-        sessionWindow.Show();
+        sessionWindow.PrepareSessionWindow(WindowPersistenceService.Load(sessionWindow._appSettings.Connection.Hostname));
         ArrangeSessions();
+        sessionWindow.Show();
         // Connecting from the library is a single-window workflow. The
         // management console stays available from the tray and the session
         // chrome, but must not flash back over the remote desktop after the
@@ -434,6 +441,8 @@ public partial class FormRdpClient : Form
 
     private void WireRdpEvents()
     {
+        _rdpService.DisplayChangeStarting += RdpService_DisplayChangeStarting;
+        _rdpService.DisplayChangeApplied += RdpService_DisplayChangeApplied;
         _rdpService.Connected += RdpService_Connected;
         _rdpService.LoginCompleted += RdpService_LoginCompleted;
         _rdpService.Disconnected += RdpService_Disconnected;
@@ -444,6 +453,8 @@ public partial class FormRdpClient : Form
 
     private void UnwireRdpEvents()
     {
+        _rdpService.DisplayChangeStarting -= RdpService_DisplayChangeStarting;
+        _rdpService.DisplayChangeApplied -= RdpService_DisplayChangeApplied;
         _rdpService.Connected -= RdpService_Connected;
         _rdpService.LoginCompleted -= RdpService_LoginCompleted;
         _rdpService.Disconnected -= RdpService_Disconnected;
@@ -897,6 +908,11 @@ public partial class FormRdpClient : Form
 
     private void SetRemoteConnectionChrome(bool enabled)
     {
+        if (enabled && _remoteChromeActive)
+        {
+            PositionWindowChrome();
+            return;
+        }
         _remoteChromeActive = enabled;
         if (_previewOnly)
             return;
@@ -914,19 +930,21 @@ public partial class FormRdpClient : Form
     {
         if (_sessionClosing || Disposing || IsDisposed)
             return;
-        var wasMaximized = WindowState == FormWindowState.Maximized;
-        var restoreBounds = RestoreBounds;
-        if (wasMaximized)
-            WindowState = FormWindowState.Normal;
-        FormBorderStyle = FormBorderStyle.None;
-        ControlBox = false;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        if (wasMaximized)
+        if (FormBorderStyle != FormBorderStyle.None || ControlBox || MaximizeBox || MinimizeBox)
         {
-            if (restoreBounds.Width > 0 && restoreBounds.Height > 0)
-                Bounds = restoreBounds;
-            WindowState = FormWindowState.Maximized;
+            var wasMaximized = WindowState == FormWindowState.Maximized;
+            var restoreBounds = RestoreBounds;
+            if (wasMaximized) WindowState = FormWindowState.Normal;
+            FormBorderStyle = FormBorderStyle.None;
+            ControlBox = false;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            if (wasMaximized)
+            {
+                if (restoreBounds.Width > 0 && restoreBounds.Height > 0)
+                    Bounds = restoreBounds;
+                WindowState = FormWindowState.Maximized;
+            }
         }
 
         if (_glassChromeStrip == null || _glassChromeStrip.IsDisposed)
@@ -1396,7 +1414,6 @@ public partial class FormRdpClient : Form
                         foreach (var session in _sessionWindows)
                         {
                             session._suppressRemoteResizeAfterRestore = false;
-                            session.SetRestoreRedraw(true);
                             // The shell can restore a host before these queued
                             // notifications drain. Its Resize handler deferred
                             // resuming while the bulk guard was still active.
@@ -1481,10 +1498,6 @@ public partial class FormRdpClient : Form
         session._restoringControlBarState = true;
         session._suppressNextActivationVisualRefresh = true;
         session._suppressRemoteResizeAfterRestore = true;
-        // A fullscreen restore can reuse the existing viewport. Keep the
-        // canvas visible when Windows presents the restored host: disabling
-        // native redraw hides the child HWNDs until the queued resume.
-        session.SetRestoreRedraw(snapshot.FullScreen);
 
         try
         {
@@ -1496,20 +1509,16 @@ public partial class FormRdpClient : Form
                 session._fullScreenMultiMonitor = snapshot.FullScreenMultiMonitor;
                 session._nonFullScreenBounds = snapshot.NonFullScreenBounds;
                 session._nonFullScreenState = snapshot.NonFullScreenState;
-                session.WindowState = FormWindowState.Normal;
                 if (!session._rdpService.FullScreen)
                 {
                     // This is only a recovery path for an out-of-order native
                     // fullscreen notification. The normal minimize/restore path
                     // keeps FullScreen true and therefore avoids a redraw cycle.
-                    session._rdpService.FullScreen = true;
+                    session._rdpService.SetHostFullScreen(true, snapshot.FullScreenMultiMonitor);
+                    session._nonFullScreenBounds = snapshot.NonFullScreenBounds;
+                    session._nonFullScreenState = snapshot.NonFullScreenState;
                 }
-                else
-                {
-                    var fullScreenBounds = session.GetTotalMonitorBounds(snapshot.FullScreenMultiMonitor);
-                    if (session.Bounds != fullScreenBounds)
-                        session.Bounds = fullScreenBounds;
-                }
+                session.RestoreToBounds(session.GetTotalMonitorBounds(snapshot.FullScreenMultiMonitor));
                 if (snapshot.WindowState == FormWindowState.Minimized)
                     session.WindowState = FormWindowState.Minimized;
                 return;
@@ -1528,9 +1537,8 @@ public partial class FormRdpClient : Form
                 return;
             }
 
-            session.WindowState = FormWindowState.Normal;
             if (snapshot.Bounds.Width > 0 && snapshot.Bounds.Height > 0)
-                session.Bounds = snapshot.Bounds;
+                session.RestoreToBounds(snapshot.Bounds);
             session.WindowState = snapshot.WindowState;
         }
         finally
@@ -1539,18 +1547,15 @@ public partial class FormRdpClient : Form
         }
     }
 
-    private void SetRestoreRedraw(bool enabled)
+    private void RestoreToBounds(Rectangle bounds)
     {
-        if (!_isSessionWindow || IsDisposed)
-            return;
-
-        if (_restoreRedrawSuspended == !enabled)
-            return;
-        _restoreRedrawSuspended = !enabled;
-        // Lock only the remote canvas, never the top-level form. WM_SETREDRAW
-        // changes WS_VISIBLE, so sending it to the host interferes with native
-        // minimize/restore and an unpaired resume can resurrect a hidden form.
-        _rdpService.SetNativeRedrawEnabled(enabled);
+        if (WindowState != FormWindowState.Normal)
+        {
+            _normalTransitionBounds = bounds;
+            try { WindowState = FormWindowState.Normal; }
+            finally { _normalTransitionBounds = null; }
+        }
+        if (Bounds != bounds) Bounds = bounds;
     }
     private readonly Dictionary<Keys, (long CheckedAt, bool Available)> _shortcutAvailability = new();
 
@@ -1953,6 +1958,7 @@ public partial class FormRdpClient : Form
 
     private void GlassChromeStrip_MaximizeRequested(object? sender, EventArgs e)
     {
+        BeginWindowStateTransition();
         if (_rdpService.IsConnected && _rdpService.FullScreen)
         {
             _rdpService.FullScreen = false;
@@ -1963,12 +1969,9 @@ public partial class FormRdpClient : Form
         if (WindowState == FormWindowState.Maximized)
         {
             var work = Screen.FromHandle(Handle).WorkingArea;
-            WindowState = FormWindowState.Normal;
-            // Auto-maximize is a startup preference. Windows may remember a
-            // working-area-sized RestoreBounds, so explicitly restore a usable
-            // normal window instead of appearing to remain maximized.
-            ApplyConnectionWindowSize(forceNormal: true);
-            Location = new Point(work.Left, work.Top);
+            var bounds = GetManualWindowBounds() ??
+                new Rectangle(work.Location, SizeFromClientSize(ConnectionWindowClientSize(work)));
+            RestoreToBounds(bounds);
         }
         else
             WindowState = FormWindowState.Maximized;
@@ -2175,9 +2178,8 @@ public partial class FormRdpClient : Form
 
     private void ShowConnectingMessage(string message)
     {
-        // Keep the management window's native title bar while a connection is
-        // being negotiated. The glass controls belong to the connected canvas.
-        SetRemoteConnectionChrome(false);
+        _frameTransition?.Cancel();
+        SetRemoteConnectionChrome(_isSessionWindow);
         panelStartup.Visible = false;
         // The RDP ActiveX control must be created under a visible native
         // parent. Keep its host visible during initialization; panelConnect
@@ -2640,11 +2642,25 @@ public partial class FormRdpClient : Form
         if (IsHandleCreated) BeginInvoke((Action)CloseAndNotify);
         else CloseAndNotify();
     }
-    private void LoadAndApplyWindowSettings()
+    private void PrepareSessionWindow(WindowSettings? persistedSettings)
     {
-        var hostname = _appSettings.Connection.Hostname;
-        var persistedSettings = WindowPersistenceService.Load(_isSessionWindow ? hostname : null);
+        StartPosition = FormStartPosition.Manual;
+        Location = Screen.FromControl(_managementWindow ?? this).WorkingArea.Location;
+        SetRemoteConnectionChrome(true);
         ApplyPersistedWindowSettings(persistedSettings);
+        UpdateWindowTitle();
+
+        var profile = _appSettings.Connection;
+        if (!IsGridLayoutActive &&
+            (_restoreFullScreenOnConnect || profile.ScreenMode == ScreenMode.FullScreen || profile.UseAllMonitors == true))
+        {
+            _rdpService.SetHostFullScreen(true, profile.UseAllMonitors == true ||
+                (_restoreFullScreenOnConnect && _fullScreenMultiMonitor));
+            _restoreFullScreenOnConnect = false;
+        }
+
+        if (!_adoptedPreviewSession || !_rdpService.HasActiveControl)
+            ShowConnectingMessage($"正在连接 {profile.Hostname}…");
     }
 
     private void ApplyPersistedWindowSettings(WindowSettings? persistedSettings)
@@ -2658,23 +2674,15 @@ public partial class FormRdpClient : Form
         _reconnectFullScreen = _restoreFullScreenOnConnect;
         _reconnectFullScreenMultiMonitor = _fullScreenMultiMonitor;
 
-        _applyConnectionWindowSizeAfterConnect = false;
-        if (_isSessionWindow && ShouldAutoMaximizeWindow)
+        if (ShouldAutoMaximizeWindow)
         {
             // WindowState.Maximized uses the monitor working area, so the
             // taskbar remains visible. This is deliberately not RDP full
             // screen, which uses the entire monitor bounds.
             WindowState = FormWindowState.Maximized;
         }
-        else if (_isSessionWindow && TryRestoreManualWindowBounds())
-            return;
-        else if (_isSessionWindow && HasConnectionWindowSize)
-        {
-            // Profile dimensions initialize windows that have not yet been
-            // manually moved/resized. Explicit user geometry takes priority.
-            _applyConnectionWindowSizeAfterConnect = true;
+        else if (_isSessionWindow)
             ApplyConnectionWindowSize();
-        }
     }
 
     private bool HasConnectionWindowSize
@@ -2690,22 +2698,24 @@ public partial class FormRdpClient : Form
            _appSettings.Connection.UseAllMonitors != true &&
            _appSettings.Connection.AutoMaximizeWindow == true;
 
-    private void ApplyConnectionWindowSize(bool forceNormal = false)
+    private void ApplyConnectionWindowSize()
     {
-        if (TryRestoreManualWindowBounds()) return;
-        if (!forceNormal && !HasConnectionWindowSize)
-            return;
+        if (TryRestoreManualWindowBounds() || !HasConnectionWindowSize) return;
 
+        ClientSize = ConnectionWindowClientSize(Screen.FromHandle(Handle).WorkingArea);
+    }
+
+    private Size ConnectionWindowClientSize(Rectangle work)
+    {
         var desktop = _rdpService.PictureDesktopSize;
         var width = _appSettings.Connection.Width ?? (desktop.Width > 0 ? desktop.Width : 1200);
         var height = _appSettings.Connection.Height ?? (desktop.Height > 0 ? desktop.Height : 800);
         var scale = _appSettings.Connection.ViewScaleFactor ?? 0;
-        var work = Screen.FromHandle(Handle).WorkingArea;
         var availableWidth = Math.Max(320, work.Width - 80);
         var availableHeight = Math.Max(240, work.Height - 80);
         var ratio = scale == 0 ? Math.Min(1.0, Math.Min((double)availableWidth / width, (double)availableHeight / height)) : scale / 100.0;
         ratio = Math.Min(ratio, Math.Min((double)availableWidth / width, (double)availableHeight / height));
-        ClientSize = new Size(Math.Max(1, (int)Math.Floor(width * ratio)),
+        return new Size(Math.Max(1, (int)Math.Floor(width * ratio)),
             Math.Max(1, (int)Math.Floor(height * ratio)));
     }
 
@@ -2733,7 +2743,6 @@ public partial class FormRdpClient : Form
         settings.ManualWindowY = Top;
         settings.ManualWindowWidth = Width;
         settings.ManualWindowHeight = Height;
-        _applyConnectionWindowSizeAfterConnect = false;
         if (_independentBounds.HasValue)
         {
             _independentBounds = Bounds;
@@ -2744,10 +2753,17 @@ public partial class FormRdpClient : Form
 
     private bool TryRestoreManualWindowBounds()
     {
+        if (GetManualWindowBounds() is not Rectangle bounds) return false;
+        RestoreToBounds(bounds);
+        return true;
+    }
+
+    private Rectangle? GetManualWindowBounds()
+    {
         var settings = _appSettings.Window;
         if (!_isSessionWindow || _previewOnly || _rdpService.FullScreen || settings.ManualWindowX is not int x || settings.ManualWindowY is not int y ||
             settings.ManualWindowWidth is not >= 320 || settings.ManualWindowHeight is not >= 240)
-            return false;
+            return null;
         var bounds = new Rectangle(x, y, settings.ManualWindowWidth.Value, settings.ManualWindowHeight.Value);
         // A disconnected monitor must not make the remembered window
         // unreachable. Keep the original geometry when it still fits.
@@ -2757,9 +2773,7 @@ public partial class FormRdpClient : Form
         bounds.Size = new Size(Math.Min(bounds.Width, work.Width), Math.Min(bounds.Height, work.Height));
         bounds.Location = new Point(Math.Clamp(bounds.X, work.Left, work.Right - bounds.Width),
             Math.Clamp(bounds.Y, work.Top, work.Bottom - bounds.Height));
-        WindowState = FormWindowState.Normal;
-        Bounds = bounds;
-        return true;
+        return bounds;
     }
 
     private WindowSettings CaptureWindowSettings()
@@ -2851,6 +2865,7 @@ public partial class FormRdpClient : Form
         if (_fullScreenTransitionInProgress)
             return;
 
+        BeginWindowStateTransition();
         _fullScreenTransitionInProgress = true;
         var previousRestoreState = _restoringControlBarState;
         var resizeDetectionWasEnabled = _formResizeDetectionService.Enabled;
@@ -2881,21 +2896,20 @@ public partial class FormRdpClient : Form
                 if (_nonFullScreenBounds.Width <= 0 || _nonFullScreenBounds.Height <= 0)
                     _nonFullScreenBounds = Bounds;
 
-                if (WindowState is FormWindowState.Maximized or FormWindowState.Minimized)
-                    WindowState = FormWindowState.Normal;
-
                 // Full screen is a state of the connected RDP surface. Do not
                 // change the management window into a borderless shell here.
                 ApplyRemoteWindowChrome();
-                Bounds = GetTotalMonitorBounds(isMultiMonitor);
+                RestoreToBounds(GetTotalMonitorBounds(isMultiMonitor));
                 _glassChromeStrip?.UpdateMaximizeGlyph(true);
                 PositionWindowChrome();
             }
             else
             {
+                // While maximized, WinForms records Bounds for the next restore.
+                // Applying the saved rectangle first would present it on screen.
+                WindowState = _nonFullScreenState;
                 if (_nonFullScreenBounds.Width > 0 && _nonFullScreenBounds.Height > 0)
                     Bounds = _nonFullScreenBounds;
-                WindowState = _nonFullScreenState;
                 if (_remoteChromeActive)
                     ApplyRemoteWindowChrome();
                 else
@@ -3035,6 +3049,29 @@ public partial class FormRdpClient : Form
 
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == Interop.WM_WINDOWPOSCHANGING && _normalTransitionBounds is Rectangle target)
+        {
+            // ShowWindow normally presents its saved normal rectangle first.
+            // Supply the final rectangle in that same positioning operation.
+            var position = Marshal.PtrToStructure<Interop.WINDOWPOS>(m.LParam);
+            const int noGeometry = Interop.SWP_NOMOVE | Interop.SWP_NOSIZE;
+            if ((position.flags & noGeometry) != noGeometry)
+            {
+                position.flags &= ~noGeometry;
+                (position.x, position.y, position.cx, position.cy) = (target.X, target.Y, target.Width, target.Height);
+                Marshal.StructureToPtr(position, m.LParam, false);
+            }
+        }
+        if (m.Msg == 0x0005 && _frameTransition != null) // WM_SIZE, before layout of child windows
+        {
+            var state = (int)m.WParam;
+            if (state is >= 0 and <= 2 && (FormWindowState)state != _nativeSizeState)
+            {
+                _nativeSizeState = (FormWindowState)state;
+                if (_nativeSizeState == FormWindowState.Minimized) _frameTransition.Cancel();
+                else BeginWindowStateTransition();
+            }
+        }
         if (m.Msg == 0x0011) // WM_QUERYENDSESSION
         {
             // A shutdown inquiry can be cancelled by another application.
@@ -3287,6 +3324,32 @@ public partial class FormRdpClient : Form
         base.Dispose(disposing);
     }
 
+    private void BeginWindowStateTransition()
+    {
+        _rdpService?.NoteWindowStateChange();
+        BeginFrameTransition(waitForDisplay: _rdpService?.IsLoginComplete == true);
+    }
+
+    private void BeginFrameTransition(bool waitForDisplay = false)
+    {
+        if (_frameTransition == null || _previewOnly || _frameTransition.Visible || !Visible || IsDisposed || Disposing ||
+            _sessionClosing || _managementWindow?._arrangingSessions == true || !SessionFrameTransition.AnimationsEnabled)
+            return;
+
+        Control? source = _reconnectDialog is { Visible: true } ? _reconnectDialog :
+            panelConnect.Visible ? panelConnect : _rdpService?.HasActiveControl == true ? panelRdp : null;
+        if (source != null) _frameTransition.Begin(source, waitForDisplay);
+    }
+
+    private void RdpService_DisplayChangeStarting(object? sender, EventArgs e)
+    {
+        if (WindowState != FormWindowState.Minimized && !_rdpService.DisplayUpdatesSuspended)
+            BeginFrameTransition(waitForDisplay: true);
+    }
+
+    private void RdpService_DisplayChangeApplied(object? sender, EventArgs e)
+        => _frameTransition?.Reveal();
+
     private void PrepareConnectionViewport()
     {
         if (!_isSessionWindow || _previewOnly) return;
@@ -3294,29 +3357,20 @@ public partial class FormRdpClient : Form
         // broker sessions may reject any later display-size request: removing
         // a title bar after Connect leaves a permanently shorter desktop.
         SetRemoteConnectionChrome(true);
-        if (_applyConnectionWindowSizeAfterConnect)
-        {
-            ApplyConnectionWindowSize();
-            _applyConnectionWindowSizeAfterConnect = false;
-        }
         PerformLayout();
     }
 
     private void RdpService_Connected(object? sender, EventArgs e)
     {
+        BeginFrameTransition();
+        PrepareConnectionViewport();
         HideConnectingMessage();
         if (_automaticReconnectActive && _automaticReconnectAttemptInProgress)
             _reconnectDialog?.CloseFromOwner();
         panelStartup.Visible = false;
         panelRdp.Visible = true;
         panelRdp.BringToFront();
-        if (!_previewOnly)
-            SetRemoteConnectionChrome(true);
-        if (_applyConnectionWindowSizeAfterConnect)
-        {
-            ApplyConnectionWindowSize();
-            _applyConnectionWindowSizeAfterConnect = false;
-        }
+        if (_frameTransition is { Visible: true }) _frameTransition.BringToFront();
         // The connected callback can run before the maximize/layout pass has
         // completed. Queue one final update against the settled client area so
         // the remote session cannot fall back to ActiveX scrollbars.
@@ -3369,6 +3423,7 @@ public partial class FormRdpClient : Form
 
     private void RdpService_Disconnected(object? sender, DisconnectedEventArgs e)
     {
+        _frameTransition?.Cancel();
         if (e.IsReconnect)
             return;
 
@@ -3581,22 +3636,9 @@ public partial class FormRdpClient : Form
     {
         if (_adoptedPreviewSession)
         {
-            LoadAndApplyWindowSettings();
-            if (_isSessionWindow && WindowState == FormWindowState.Normal && _appSettings.Window.ManualWindowX == null)
-                Location = Screen.FromControl(_managementWindow ?? this).WorkingArea.Location;
-            UpdateWindowTitle();
-            SetRemoteConnectionChrome(true);
-
             if (_rdpService.IsConnected)
             {
-                if (_restoreFullScreenOnConnect)
-                {
-                    if (!_rdpService.FullScreen)
-                        _rdpService.FullScreen = true;
-                    else
-                        SetFullScreenMode(true, _appSettings.Connection.UseAllMonitors == true);
-                    _restoreFullScreenOnConnect = false;
-                }
+                PositionWindowChrome();
                 QueueRemoteResize();
                 BeginInvoke(new Action(() =>
                 {
@@ -3625,12 +3667,9 @@ public partial class FormRdpClient : Form
                 StartConnection();
             return;
         }
-        LoadAndApplyWindowSettings();
-        if (_isSessionWindow && WindowState == FormWindowState.Normal && _appSettings.Window.ManualWindowX == null)
-            Location = Screen.FromControl(_managementWindow ?? this).WorkingArea.Location;
-        UpdateWindowTitle();
         if (_isSessionWindow)
         {
+            PositionWindowChrome();
             // WindowState.Maximized is applied immediately, but Windows may
             // finish recalculating the working-area client size after Shown.
             // Start on the next UI turn so the first RDP dimensions come from
@@ -3646,6 +3685,8 @@ public partial class FormRdpClient : Form
         }
         else
         {
+            ApplyPersistedWindowSettings(WindowPersistenceService.Load(null));
+            UpdateWindowTitle();
             // A silent instance's first Shown happens only after the user
             // explicitly opens the console. Never hide it again here.
             // The first explicit open can carry new .rdp arguments, replacing

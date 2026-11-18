@@ -93,17 +93,17 @@ internal sealed class FormSizeEnforcementService : NativeWindow, IDisposable
                 if (_parentForm.Width % 2 == 0 && _parentForm.Height % 2 == 0)
                     return;
 
-                var newWidth = _parentForm.Width % 2 != 0 ? _parentForm.Width + 1 : _parentForm.Width;
-                var newHeight = _parentForm.Height % 2 != 0 ? _parentForm.Height + 1 : _parentForm.Height;
+                var observedSize = _parentForm.Size;
 
                 // Use BeginInvoke to defer the resize until after message processing completes
                 _parentForm.BeginInvoke(new Action(() =>
                 {
-                    if (_parentForm.WindowState != FormWindowState.Normal || (_parentForm.Width % 2 == 0 && _parentForm.Height % 2 == 0))
+                    if (_disposed || !IsActive || _parentForm == null || _parentForm.IsDisposed ||
+                        _parentForm.WindowState != FormWindowState.Normal || _parentForm.Size != observedSize)
                         return;
 
-                    _parentForm.Width = newWidth;
-                    _parentForm.Height = newHeight;
+                    _parentForm.Size = new System.Drawing.Size(observedSize.Width + observedSize.Width % 2,
+                        observedSize.Height + observedSize.Height % 2);
                 }));
 
                 return;

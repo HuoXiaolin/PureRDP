@@ -12,6 +12,7 @@ internal static class Program
     [DllImport("user32.dll")] private static extern bool IsZoomed(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetCapture();
     [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] private static extern bool GetLayeredWindowAttributes(IntPtr window, out uint color, out byte alpha, out uint flags);
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
     private static IntPtr Packed(Point point) => (IntPtr)unchecked((int)((uint)(ushort)point.X | ((uint)(ushort)point.Y << 16)));
 
@@ -63,6 +64,7 @@ internal static class Program
             TestDynamicViewportTransitions();
             TestPreLoginViewport();
             TestConnectionViewportStability();
+            TestSessionFrameTransition();
             Console.WriteLine($"PASS: {_checks} per-monitor display checks; disconnected native controls, no RDP login.");
             return;
         }
@@ -74,6 +76,7 @@ internal static class Program
         TestDynamicViewportTransitions();
         TestPreLoginViewport();
         TestConnectionViewportStability();
+        TestSessionFrameTransition();
         TestHiddenControlBar();
         TestFullscreenRestoreCanvas();
         TestRoutingPacket();
@@ -317,14 +320,22 @@ internal static class Program
         for (var transition = 0; transition < 10; transition++)
         {
             first.WindowState = FormWindowState.Maximized; Pump();
+            var maximizedSize = first.ClientSize;
+            var presented = new List<Size>();
+            EventHandler record = (_, _) => presented.Add(first.ClientSize);
+            first.ClientSizeChanged += record;
             Call(service, "SetFullScreen", true, true); Pump();
             Check(first.WindowState == FormWindowState.Normal && first.Bounds == Screen.FromControl(first).Bounds,
                 "Maximized-to-fullscreen must use monitor bounds rather than the taskbar working area.");
             Check(((Panel)Field(first, "panelRdp")).ClientSize == first.ClientSize && !(bool)Field(service, "_displayUpdatesSuspended"),
                 "Fullscreen canvas must cover the host with layout updates enabled.");
+            var fullscreenSize = first.ClientSize;
             Call(service, "SetFullScreen", false, true); Pump();
+            first.ClientSizeChanged -= record;
             Check(first.WindowState == FormWindowState.Maximized && IsZoomed(first.Handle),
                 "Fullscreen exit must restore the previous working-area maximized state.");
+            Check(presented.All(size => size == maximizedSize || size == fullscreenSize),
+                $"Maximize/fullscreen must not present an intermediate normal rectangle: {string.Join(", ", presented)}.");
         }
         first.WindowState = FormWindowState.Normal; Pump();
         for (var iteration = 0; iteration < 5; iteration++)
@@ -376,16 +387,10 @@ internal static class Program
         var canvas = (Panel)Field(second, "panelRdp");
         canvas.Hide();
         var canvasHandle = canvas.Handle;
-        var canvasService = Field(second, "_rdpService");
-        Call(canvasService, "SetNativeRedrawEnabled", true);
-        Check(!IsWindowVisible(canvasHandle), "Unpaired redraw resume showed a hidden remote canvas.");
-        Call(canvasService, "SetNativeRedrawEnabled", false);
-        Call(canvasService, "SetNativeRedrawEnabled", true);
-        Check(!IsWindowVisible(canvasHandle), "Redraw suspension showed a canvas which was hidden before the operation.");
-        // Paired canvas redraw suppression must not hide the top-level HWND.
-        Call(first, "SetRestoreRedraw", false);
-        Check(IsWindowVisible(first.Handle), "Restore redraw suspension removed visibility from the top-level window.");
-        Call(first, "SetRestoreRedraw", true);
+        Call(manager, "ToggleAllSessionMinimize", false);
+        Call(manager, "ToggleAllSessionMinimize", false); Pump();
+        Check(!IsWindowVisible(canvasHandle), "Restoring other windows must leave a previously hidden canvas hidden.");
+        Check(IsWindowVisible(first.Handle) && IsWindowVisible(second.Handle), "Both restored hosts must be visible.");
         Console.WriteLine($"PASS: {_checks} minimize/restore checks; real host HWNDs, no RDP login.");
     }
 
@@ -437,6 +442,18 @@ internal static class Program
                 "Entering fullscreen from a minimized window must finish with the native RDP surface visible.");
             Call(service, "SetFullScreen", false, true);
             Check(session.Bounds == windowedBounds, "Exiting fullscreen must restore the original windowed bounds.");
+            foreach (var mode in new[] { FormWindowState.Normal, FormWindowState.Maximized })
+            {
+                session.WindowState = mode;
+                Pump();
+                var before = session.Bounds;
+                Call(manager, "ToggleAllSessionMinimize", false);
+                Call(manager, "ToggleAllSessionMinimize", false);
+                Check(session.WindowState == mode && session.Bounds == before &&
+                    IsWindowVisible(canvas.Handle) && IsWindowVisible(activeX.Handle),
+                    $"The first restored {mode} frame must already have its final bounds and a visible native surface.");
+                Pump();
+            }
         }
         finally
         {
@@ -540,13 +557,106 @@ internal static class Program
             var requested = (Size)Call(service, "GetInitialDesktopSize", profile);
             Check(window.FormBorderStyle == FormBorderStyle.None,
                 "The first handshake must use the final borderless host, including maximized windows.");
+            var visibleSizes = new List<Size>();
+            EventHandler recordSize = (_, _) => visibleSizes.Add(canvas.ClientSize);
+            canvas.SizeChanged += recordSize;
             Call(window, "RdpService_Connected", window, EventArgs.Empty); Pump();
+            canvas.SizeChanged -= recordSize;
+            Check(visibleSizes.All(size => size == before),
+                $"Connection completion exposed intermediate canvas sizes: {string.Join(", ", visibleSizes)} (expected {before}).");
             Check(canvas.ClientSize == before,
                 "Connection completion must not enlarge the viewport by removing a late title bar.");
             Check(Math.Abs(requested.Width - canvas.ClientSize.Width) <= 1 &&
                   Math.Abs(requested.Height - canvas.ClientSize.Height) <= 1,
                 "A broker desktop must match the final canvas within even-pixel rounding, without a title-bar-height bottom gap.");
         }
+    }
+
+    private static void TestSessionFrameTransition()
+    {
+        using (var tiled = Window(null))
+        {
+            var tiledSettings = Field(tiled, "_appSettings");
+            var tiledProfile = tiledSettings.GetType().GetProperty("Connection")!.GetValue(tiledSettings)!;
+            tiledProfile.GetType().GetProperty("Width")!.SetValue(tiledProfile, 1200);
+            tiledProfile.GetType().GetProperty("Height")!.SetValue(tiledProfile, 800);
+            Call(tiled, "PrepareSessionWindow", new object[] { null! });
+            tiled.ClientSize = new Size(640, 400); // manager assigns the grid slot before Show
+            tiled.Show();
+            Call(tiled, "PrepareConnectionViewport");
+            Call(tiled, "RdpService_Connected", tiled, EventArgs.Empty);
+            Check(tiled.ClientSize == new Size(640, 400),
+                "Neither negotiation nor connection completion may replay the saved profile size over the visible grid slot.");
+        }
+        using var session = Window(null);
+        var settings = Field(session, "_appSettings");
+        var profile = settings.GetType().GetProperty("Connection")!.GetValue(settings)!;
+        profile.GetType().GetProperty("AutoMaximizeWindow")!.SetValue(profile, true);
+        Call(session, "PrepareSessionWindow", new object[] { null! });
+        Check(!session.Visible && session.WindowState == FormWindowState.Maximized &&
+            session.FormBorderStyle == FormBorderStyle.None, "Prepare the final window mode before first show.");
+        var source = (Panel)Field(session, "panelConnect");
+        var transition = (Control)Field(session, "_frameTransition");
+        using var marker = new Panel { Dock = DockStyle.Fill, BackColor = Color.SeaGreen };
+        source.Controls.Add(marker);
+        marker.BringToFront();
+        Size firstVisible = Size.Empty;
+        session.Shown += (_, _) => firstVisible = session.ClientSize;
+        session.Show();
+        Pump();
+        Check(source.Visible && firstVisible == session.ClientSize && firstVisible == source.ClientSize,
+            "The connecting surface must occupy the final maximized client area on its first show.");
+        var testPoint = marker.PointToScreen(new Point(marker.Width / 2, marker.Height / 2));
+        var inputTarget = WindowFromPoint(testPoint);
+        Check(inputTarget == marker.Handle, "The synthetic session surface must receive input before the fade.");
+        Call(transition, "Begin", source, true);
+        Check(transition.Visible && transition.Bounds == source.Bounds && !transition.CanSelect,
+            "A captured client frame must cover exactly the canvas without taking keyboard focus.");
+        var frame = (Bitmap)Field(transition, "_frame");
+        Check(frame.GetPixel(frame.Width / 2, frame.Height / 2).ToArgb() == marker.BackColor.ToArgb(),
+            "The snapshot must contain the synthetic child pixels, not a blank parent surface.");
+        Check(GetLayeredWindowAttributes(transition.Handle, out _, out var alpha, out _) && alpha == 255,
+            "The first snapshot frame must be opaque.");
+        Check(WindowFromPoint(testPoint) == inputTarget, "Pointer input must pass through the visible transition.");
+        Call(transition, "Begin", source, true);
+        Check(ReferenceEquals(frame, Field(transition, "_frame")), "Overlapping size events must share one frame.");
+
+        var size = source.ClientSize;
+        Call(transition, "Reveal");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var sawFade = false;
+        while (transition.Visible && watch.ElapsedMilliseconds < 1500)
+        {
+            Application.DoEvents();
+            if (transition.Visible && GetLayeredWindowAttributes(transition.Handle, out _, out alpha, out _))
+                sawFade |= alpha is > 0 and < 255;
+            Thread.Sleep(5);
+        }
+        Check(sawFade && !transition.Visible && Field(transition, "_frame") == null && source.ClientSize == size,
+            "The mask must fade through intermediate alpha values, release its frame, and preserve the live viewport.");
+        marker.BackColor = Color.Black;
+        using var edge = new Panel { Location = new Point(2, 0), Size = new Size(12, 64), BackColor = Color.SteelBlue };
+        marker.Controls.Add(edge);
+        Call(transition, "Begin", source, true);
+        Check(transition.Visible && ((Bitmap)Field(transition, "_frame")).GetPixel(5, 5).ToArgb() == edge.BackColor.ToArgb(),
+            "An otherwise dark desktop with content at the edge must still yield a usable frame.");
+        watch.Restart();
+        while (transition.Visible && watch.ElapsedMilliseconds < 1500) { Application.DoEvents(); Thread.Sleep(5); }
+        Check(!transition.Visible && Field(transition, "_frame") == null,
+            "A server that never acknowledges the new resolution must not leave a frozen overlay.");
+        edge.Hide();
+        Call(transition, "Begin", source, true);
+        Check(!transition.Visible && Field(transition, "_frame") == null,
+            "An unprintable black surface must leave the live canvas visible.");
+        marker.BackColor = Color.SeaGreen;
+
+        var animate = (bool)transition.GetType().GetProperty("AnimationsEnabled",
+            BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        Call(session, "RdpService_Connected", session, EventArgs.Empty);
+        Check(transition.Visible == animate && !source.Visible && ((Panel)Field(session, "panelRdp")).Visible,
+            "Connecting must reveal the live canvas and honor the Windows animation preference.");
+        session.WindowState = FormWindowState.Minimized;
+        Check(!transition.Visible && Field(transition, "_frame") == null, "Minimize must release any in-flight snapshot.");
     }
 
     private static void TestDynamicViewportTransitions()
@@ -574,6 +684,12 @@ internal static class Program
         {
             var client = (MSTSCLib.MsRdpClient10NotSafeForScripting)Field(service, "_rdpClient");
             var viewport = (Control)Field(service, "_rdpControl");
+            var starts = 0;
+            var applied = 0;
+            EventHandler starting = (_, _) => starts++;
+            EventHandler finished = (_, _) => applied++;
+            serviceType.GetEvent("DisplayChangeStarting", Members)!.GetAddMethod(true)!.Invoke(service, new object[] { starting });
+            serviceType.GetEvent("DisplayChangeApplied", Members)!.GetAddMethod(true)!.Invoke(service, new object[] { finished });
             Console.WriteLine($"Display transition regression: host DPI={host.DeviceDpi}; container DPI={container.DeviceDpi}.");
             void ReportSize(Size desktop)
                 => Call(service, "OnRemoteDesktopSizeChange", null!,
@@ -596,11 +712,14 @@ internal static class Program
             {
                 container.Size = size;
                 var beforeEvent = viewport.Bounds;
+                var beforeStart = starts;
                 ReportSize(size);
-                Check(viewport.Bounds == beforeEvent,
+                Check(viewport.Bounds == beforeEvent && starts == beforeStart,
                     "A native size callback must not change the ActiveX bounds before the native event has unwound.");
                 CommitSize(size); // native properties settle after event delivery
                 Pump();
+                Check(starts == beforeStart + 1 && applied == starts,
+                    "Each confirmed desktop change must bracket one native refit outside its COM callback.");
                 Check(viewport.Bounds == new Rectangle(Point.Empty, size),
                     $"Settled desktop must fill the viewport without retaining the previous rectangle: {size} / {viewport.Bounds}.");
                 Check(client.AdvancedSettings9.SmartSizing,
@@ -621,9 +740,10 @@ internal static class Program
 
             // Repeated notifications retain the full, stable viewport.
             var beforeDuplicate = viewport.Bounds;
+            var previousFades = starts;
             ReportSize(container.Size);
             Pump();
-            Check(viewport.Bounds == beforeDuplicate && client.AdvancedSettings9.SmartSizing,
+            Check(viewport.Bounds == beforeDuplicate && client.AdvancedSettings9.SmartSizing && starts == previousFades,
                 "Duplicate remote-size events must not disturb the fitted viewport.");
 
             // Several server notifications in one dispatch must use the last
@@ -1031,10 +1151,9 @@ internal static class Program
         connection.GetType().GetProperty("Height")!.SetValue(connection, 800);
         Call(reopened, "ApplyPersistedWindowSettings", restoredSettings);
         Check(reopened.Bounds == rememberedBounds, "JSON-restored manual geometry must take priority over profile dimensions.");
-        Check(!(bool)Field(reopened, "_applyConnectionWindowSizeAfterConnect"), "Connect completion must not reset restored manual dimensions.");
         Call(reopened, "SetRemoteConnectionChrome", true);
         Check(reopened.Bounds == rememberedBounds, "Removing startup window chrome must not shrink the saved geometry.");
-        Call(reopened, "ApplyConnectionWindowSize", false);
+        Call(reopened, "ApplyConnectionWindowSize");
         Check(reopened.Bounds == rememberedBounds, "Later profile-size application must preserve the last manual bounds.");
         connection.GetType().GetProperty("AutoMaximizeWindow")!.SetValue(connection, true);
         restoredSettings.GetType().GetProperty("FullScreen")!.SetValue(restoredSettings, true);
@@ -1046,11 +1165,12 @@ internal static class Program
         Check(!(bool)Field(reopened, "_restoreFullScreenOnConnect") &&
             !(bool)Field(reopened, "_reconnectFullScreen"),
             "Window fill must not restore an old true-fullscreen preference.");
+        var maximizedCanvas = reopened.ClientSize;
         Call(reopened, "RdpService_Connected", reopened, EventArgs.Empty);
         Pump();
         Check(reopened.WindowState == FormWindowState.Maximized && IsZoomed(reopened.Handle),
             "Connected chrome must preserve automatic window fill rather than restoring manual bounds.");
-        Check(!(bool)Field(reopened, "_applyConnectionWindowSizeAfterConnect"),
+        Check(reopened.ClientSize == maximizedCanvas,
             "Connection completion must not apply fixed profile dimensions over automatic window fill.");
         Call(reopened, "GlassChromeStrip_MaximizeRequested", reopened, EventArgs.Empty);
         Pump();

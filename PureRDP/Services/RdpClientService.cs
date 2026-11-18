@@ -56,8 +56,7 @@ internal sealed class RdpClientService : IDisposable
     private int _connectionGeneration;
     private int _qualityProbeRunId;
     private int _disposed;
-    private IntPtr _suspendedContainerRedrawHandle;
-    private IntPtr _suspendedClientRedrawHandle;
+    private long _windowStateResizeUntil;
 
     public bool FullScreen { get => _fullScreen; set => SetFullScreen(value, false); }
     public bool IsConnected
@@ -100,6 +99,8 @@ internal sealed class RdpClientService : IDisposable
     internal event EventHandler? LeaveFullScreenRequested;
     public event EventHandler<FullScreenEventArgs>? FullScreenChanged;
     internal event EventHandler? ConnectionQualityChanged;
+    internal event EventHandler? DisplayChangeStarting;
+    internal event EventHandler? DisplayChangeApplied;
 
     public RdpClientService(Control container)
     {
@@ -273,40 +274,7 @@ internal sealed class RdpClientService : IDisposable
     internal void ResumeDisplayAfterWindowRestore()
         => SetDisplayUpdatesSuspended(false, refreshOnResume: false);
 
-    internal void SetNativeRedrawEnabled(bool enabled)
-    {
-        if (Volatile.Read(ref _disposed) != 0) return;
-        if (!enabled)
-        {
-            // A hidden canvas must stay hidden. Resume only HWNDs which this
-            // operation actually suspended, and never a recreated HWND.
-            if (_suspendedClientRedrawHandle == IntPtr.Zero && _rdpControl is { IsHandleCreated: true } &&
-                WindowChromeInterop.IsWindowVisible(_rdpControl.Handle))
-            {
-                _suspendedClientRedrawHandle = _rdpControl.Handle;
-                WindowChromeInterop.SendMessage(_rdpControl.Handle, Interop.WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
-            }
-            if (_suspendedContainerRedrawHandle == IntPtr.Zero && _container.IsHandleCreated &&
-                WindowChromeInterop.IsWindowVisible(_container.Handle))
-            {
-                _suspendedContainerRedrawHandle = _container.Handle;
-                WindowChromeInterop.SendMessage(_container.Handle, Interop.WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
-            }
-            return;
-        }
-
-        var containerHandle = _suspendedContainerRedrawHandle;
-        var clientHandle = _suspendedClientRedrawHandle;
-        _suspendedContainerRedrawHandle = IntPtr.Zero;
-        _suspendedClientRedrawHandle = IntPtr.Zero;
-        if (containerHandle != IntPtr.Zero && _container.IsHandleCreated && _container.Handle == containerHandle)
-            WindowChromeInterop.SendMessage(containerHandle, Interop.WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
-        if (clientHandle != IntPtr.Zero && _rdpControl is { IsHandleCreated: true } && _rdpControl.Handle == clientHandle)
-        {
-            WindowChromeInterop.SendMessage(clientHandle, Interop.WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
-            _rdpControl.Invalidate(false);
-        }
-    }
+    internal void NoteWindowStateChange() => _windowStateResizeUntil = Environment.TickCount64 + 250;
 
     private uint EffectiveScale => _connectionSettings?.ScaleFactor is uint scale && scale >= 100 ? scale : _container.DeviceZoom;
     private System.Drawing.Size _tileDesktop;
@@ -392,9 +360,12 @@ internal sealed class RdpClientService : IDisposable
                 if (Volatile.Read(ref _disposed) != 0 || control.IsDisposed || _displayUpdatesSuspended) return;
                 try
                 {
+                    var desktopChanged = !_viewDesktop.IsEmpty && _fittedNativeDesktop != _viewDesktop;
+                    if (desktopChanged) DisplayChangeStarting?.Invoke(this, EventArgs.Empty);
                     RefreshPictureLayout();
                     RefreshNativePictureTransform();
                     control.Invalidate(false);
+                    if (desktopChanged) DisplayChangeApplied?.Invoke(this, EventArgs.Empty);
                     if (_rdpClient != null)
                         ReportDisplay($"display-applied desktop={_viewDesktop.Width}x{_viewDesktop.Height}; " +
                             $"native={_rdpClient.DesktopWidth}x{_rdpClient.DesktopHeight}; " +
@@ -1068,6 +1039,7 @@ internal sealed class RdpClientService : IDisposable
                 var dpi = Math.Max(96, _container.DeviceDpi);
                 var physicalWidth = (uint)Math.Clamp(Math.Round(updatedWidth * 25.4 / dpi), 10, 1800);
                 var physicalHeight = (uint)Math.Clamp(Math.Round(updatedHeight * 25.4 / dpi), 10, 1800);
+                DisplayChangeStarting?.Invoke(this, EventArgs.Empty);
                 rdpClient10.UpdateSessionDisplaySettings(updatedWidth, updatedHeight, physicalWidth, physicalHeight, 0, updatedScaleFactor, DEVICE_SCALE_FACTOR);
                 ReportDisplay($"requested={updatedWidth}x{updatedHeight}; remote={_rdpClient.DesktopWidth}x{_rdpClient.DesktopHeight}; scroll={_rdpClient.HorizontalScrollBarVisible},{_rdpClient.VerticalScrollBarVisible}");
             }
@@ -1106,6 +1078,7 @@ internal sealed class RdpClientService : IDisposable
         if (!_loginComplete || _interactiveResize) return;
         _displayAttempts = 0;
         _displayTarget = _container.ClientSize;
+        _displayTimer.Interval = Environment.TickCount64 < _windowStateResizeUntil ? 64 : 500;
         _displayTimer.Start();
     }
 
@@ -1150,14 +1123,17 @@ internal sealed class RdpClientService : IDisposable
 
     private void SetFullScreen(bool value, bool forceIfDisconnected)
     {
-        if (_fullScreen == value)
-            return;
-
         if (_rdpClient == null && !forceIfDisconnected)
             return;
 
+        SetHostFullScreen(value, _connectionSettings?.UseAllMonitors == true);
+    }
+
+    internal void SetHostFullScreen(bool value, bool useAllMonitors)
+    {
+        if (_fullScreen == value) return;
         _fullScreen = value;
-        var fullScreenEventArgs = new FullScreenEventArgs(_fullScreen, _connectionSettings?.UseAllMonitors ?? false);
+        var fullScreenEventArgs = new FullScreenEventArgs(value, useAllMonitors);
         FullScreenChanged?.Invoke(this, fullScreenEventArgs);
         // The borderless host covers Screen.Bounds (including the taskbar).
         // Keep ActiveX windowed so it does not enter a second, native fullscreen

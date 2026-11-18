@@ -14,7 +14,6 @@ namespace PureRDP.Platform;
 internal static class Interop
 {
     // Window Messages
-    public const int WM_SETREDRAW = 0x000B;
     public const int WM_WINDOWPOSCHANGING = 0x0046;
     public const int WM_WINDOWPOSCHANGED = 0x0047;
     public const int WM_NCHITTEST = 0x0084;
